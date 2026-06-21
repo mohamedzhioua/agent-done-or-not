@@ -1,6 +1,9 @@
 # Shell scripts and config must use LF — CRLF breaks them on Linux/macOS/CI.
 *.sh    text eol=lf
 *.json  text eol=lf
+*.jsonl text eol=lf
+*.cast  text eol=lf
 *.md    text eol=lf
+*.yml   text eol=lf
 .gitignore   text eol=lf
 .cursorrules text eol=lf

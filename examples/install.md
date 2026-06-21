@@ -65,5 +65,16 @@ export AGENT_DONE_OFF=1
 | `AGENT_DONE_OFF` | unset | Set to `1` to disable the stop-gate (escape hatch). |
 | `AGENT_DONE_TTL` | `3600` | Seconds before a receipt is considered stale and rejected. `0` disables the freshness check. |
 | `AGENT_DONE_MAX_RETRIES` | `10` | Consecutive blocks per session before the gate fails open (loudly) to avoid an infinite stop loop. |
+| `AGENT_DONE_ALLOWED_COMMANDS` | unset | Regex the recorded command must match for `assert` to accept a receipt (same as `--allow-command-regex`). |
 | `AGENT_DONE_DIR` | `<repo>/.agent-proof` | Where receipts are stored. |
 | `AGENT_DONE_SESSION` | unset | If your harness exports a session id, receipts segregate per session. |
+
+## Gate CI / pre-commit with `assert`
+
+`assert` reads the ledger without running anything — use it where you want to
+refuse to proceed unless the right checks passed this run:
+
+```bash
+bash done-gate.sh assert --label test --label build --ttl 3600
+bash done-gate.sh assert --json --label test   # machine-readable
+```

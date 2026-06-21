@@ -1,0 +1,3 @@
+{"label":"lint","command":"npm run lint","exit_code":0,"sha256":"422262db49d96fd573db3cb6b49077db0449608364f6e97175e413f96371f0a7","log":".agent-proof/20260621T194401Z/lint.log","at":"2026-06-21T19:44:01Z","epoch":1781034241,"session":"a1b2c3"}
+{"label":"test","command":"npm test","exit_code":1,"sha256":"4f30505310ccb9e7828a7602ee125d0da4956b9e09601067225eb192072d16fb","log":".agent-proof/20260621T194401Z/test.log","at":"2026-06-21T19:45:12Z","epoch":1781034312,"session":"a1b2c3"}
+{"label":"test","command":"npm test","exit_code":0,"sha256":"661ea2edce1d4894ab62edb966f83c890f6c90399109e3826193461ce333b5e1","log":".agent-proof/20260621T194401Z/test.log","at":"2026-06-21T19:47:03Z","epoch":1781034423,"session":"a1b2c3"}

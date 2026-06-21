@@ -135,6 +135,72 @@ d="$(newsandbox)"
 rc="$( cd "$d" && printf '%s' "$PAYLOAD" | AGENT_DONE_OFF=1 bash "$STOP_GATE" >/dev/null 2>&1; printf '%s' "$?" )"
 [ "$rc" = "0" ] && ok "escape hatch (AGENT_DONE_OFF=1) allows" || bad "escape hatch (got $rc)"
 
+echo "== assert (CI mode) =="
+
+# 19. assert fails when there is no proof.
+d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" assert >/dev/null 2>&1 )
+[ "$?" = "1" ] && ok "assert fails with no proof" || bad "assert no-proof"
+
+# 20. assert passes after a fresh passing capture (no label = latest).
+d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert >/dev/null 2>&1 )
+[ "$?" = "0" ] && ok "assert passes on a fresh passing receipt" || bad "assert pass"
+
+# 21. assert --label fails when that label failed.
+d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" capture --label test -- false >/dev/null 2>&1
+  bash "$DONE_GATE" assert --label test >/dev/null 2>&1 )
+[ "$?" = "1" ] && ok "assert --label fails on a failing check" || bad "assert label-fail"
+
+# 22. assert requires ALL labels (missing one fails).
+d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert --label test --label build >/dev/null 2>&1 )
+[ "$?" = "1" ] && ok "assert fails when a required label is missing" || bad "assert all-labels"
+
+# 23. assert --ttl rejects a stale receipt.
+d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
+sleep 2
+( cd "$d" && bash "$DONE_GATE" assert --label t --ttl 1 >/dev/null 2>&1 )
+[ "$?" = "1" ] && ok "assert --ttl rejects a stale receipt" || bad "assert ttl"
+
+# 24. assert --allow-command-regex enforces the command class.
+d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert --label test --allow-command-regex '^true$' >/dev/null 2>&1 )
+ok_match=$?
+( cd "$d" && bash "$DONE_GATE" assert --label test --allow-command-regex '^npm ' >/dev/null 2>&1 )
+bad_match=$?
+[ "$ok_match" = "0" ] && [ "$bad_match" = "1" ] \
+  && ok "assert --allow-command-regex matches the right command class" || bad "assert regex ($ok_match/$bad_match)"
+
+echo "== --json output =="
+
+# 25. capture --json emits a parseable receipt.
+d="$(newsandbox)"
+out="$( cd "$d" && bash "$DONE_GATE" capture --json --label t -- true 2>/dev/null )"
+printf '%s' "$out" | python -c "import sys,json; d=json.load(sys.stdin); assert d['label']=='t' and d['exit_code']==0 and d['sha256']" >/dev/null 2>&1 \
+  && ok "capture --json emits a parseable receipt" || bad "capture --json"
+
+# 26. assert --json emits ok=true on a passing receipt.
+d="$(newsandbox)"
+out="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
+        bash "$DONE_GATE" assert --json --label t 2>/dev/null )"
+printf '%s' "$out" | python -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] is True and d['checks'][0]['label']=='t'" >/dev/null 2>&1 \
+  && ok "assert --json emits ok=true" || bad "assert --json"
+
+# 27. verify --json emits ok=true for a matching hash.
+d="$(newsandbox)"
+out="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
+        sha="$(grep -oE '"sha256":"[0-9a-f]+"' .agent-proof/*/ledger.jsonl | head -n1 | sed -E 's/.*"([0-9a-f]+)".*/\1/')"
+        bash "$DONE_GATE" verify --json --label t --sha "$sha" 2>/dev/null )"
+printf '%s' "$out" | python -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] is True" >/dev/null 2>&1 \
+  && ok "verify --json emits ok=true on match" || bad "verify --json"
+
+# 28. show --json emits a parseable receipts array.
+d="$(newsandbox)"
+out="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
+        bash "$DONE_GATE" show --json 2>/dev/null )"
+printf '%s' "$out" | python -c "import sys,json; d=json.load(sys.stdin); assert isinstance(d['receipts'],list) and d['receipts'][0]['label']=='t'" >/dev/null 2>&1 \
+  && ok "show --json emits a receipts array" || bad "show --json"
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
