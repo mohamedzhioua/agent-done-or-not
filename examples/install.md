@@ -63,6 +63,7 @@ export AGENT_DONE_OFF=1
 | Env var | Default | Meaning |
 |---|---|---|
 | `AGENT_DONE_OFF` | unset | Set to `1` to disable the stop-gate (escape hatch). |
-| `AGENT_DONE_TTL` | `3600` | Seconds before a receipt is considered stale and rejected. |
+| `AGENT_DONE_TTL` | `3600` | Seconds before a receipt is considered stale and rejected. `0` disables the freshness check. |
+| `AGENT_DONE_MAX_RETRIES` | `10` | Consecutive blocks per session before the gate fails open (loudly) to avoid an infinite stop loop. |
 | `AGENT_DONE_DIR` | `<repo>/.agent-proof` | Where receipts are stored. |
 | `AGENT_DONE_SESSION` | unset | If your harness exports a session id, receipts segregate per session. |

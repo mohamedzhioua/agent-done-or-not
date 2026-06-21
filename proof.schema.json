@@ -4,7 +4,7 @@
   "title": "Proof receipt",
   "description": "One JSON object per line in .agent-proof/<run>/ledger.jsonl. Each line records a verification check captured by done-gate.sh.",
   "type": "object",
-  "required": ["label", "command", "exit_code", "sha256", "log", "at"],
+  "required": ["label", "command", "exit_code", "sha256", "log", "at", "epoch"],
   "additionalProperties": false,
   "properties": {
     "label": {
@@ -31,7 +31,11 @@
     "at": {
       "type": "string",
       "format": "date-time",
-      "description": "UTC capture time (ISO 8601)."
+      "description": "UTC capture time (ISO 8601), for humans."
+    },
+    "epoch": {
+      "type": "integer",
+      "description": "Unix epoch seconds at capture time. The stop-gate uses this (not file mtime) to judge freshness, so a stale receipt can't be made fresh with `touch`."
     },
     "session": {
       "type": "string",

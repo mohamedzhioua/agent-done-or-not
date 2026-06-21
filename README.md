@@ -4,10 +4,6 @@
 forces it to *prove* the claim with a hash before it can declare success. Works
 with **Claude Code, Cursor, and Codex**. Copy. Paste. Ship.
 
-<!-- Add the demo GIF here once recorded: agent says "Done!" → gate blocks → it
-     actually runs the check → a test fails → it gets caught. -->
-<!-- ![demo](docs/demo.gif) -->
-
 ```text
 agent: All tests pass — task complete! ✅
 stop-gate: BLOCKED — no NEW passing check since your last completion — re-verify this change
@@ -70,14 +66,22 @@ bash done-gate.sh show
 2. **`stop-gate.sh`** is a Stop-event hook. It blocks the agent from ending its
    turn unless the most recent receipt is:
    - **passing** (a red check can never mean "done"),
-   - **fresh** (older than `AGENT_DONE_TTL`, default 1h, is rejected — no
-     honoring yesterday's ledger), and
+   - **fresh** — judged by the epoch recorded *inside* the receipt (not file
+     mtime, which `touch` could forge); older than `AGENT_DONE_TTL` (default 1h)
+     is rejected, so it never honors yesterday's ledger, and
    - **not already used** to clear a previous stop (every completion needs its
      own proof).
 
+**It fails closed.** Once a stop is being gated, any missing, empty, unparseable,
+or stale proof state *blocks*. The only ways past are a verified passing receipt,
+the escape hatch, or an anti-infinite-loop safety valve (it gives up and warns
+loudly after `AGENT_DONE_MAX_RETRIES` consecutive blocks so the agent can never
+get permanently stuck).
+
 Dependency-free: portable `bash` + `git` + one of `sha256sum`/`shasum`/`python`.
 No network, no LLM, no config file. The receipt format is documented in
-[`proof.schema.json`](proof.schema.json).
+[`proof.schema.json`](proof.schema.json). Hardened with an independent
+cross-model (Codex) security review — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Honest limits
 
