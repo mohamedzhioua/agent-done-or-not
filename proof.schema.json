@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/agent-done-or-not/proof.schema.json",
+  "title": "Proof receipt",
+  "description": "One JSON object per line in .agent-proof/<run>/ledger.jsonl. Each line records a verification check captured by done-gate.sh.",
+  "type": "object",
+  "required": ["label", "command", "exit_code", "sha256", "log", "at"],
+  "additionalProperties": false,
+  "properties": {
+    "label": {
+      "type": "string",
+      "description": "Human-chosen name for the check, e.g. \"test\", \"build\", \"curl-health\"."
+    },
+    "command": {
+      "type": "string",
+      "description": "The exact command that was run."
+    },
+    "exit_code": {
+      "type": "integer",
+      "description": "The command's own exit code. 0 = passing; any non-zero fails the gate."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the captured stdout+stderr log — the tamper-evident fingerprint of what actually happened."
+    },
+    "log": {
+      "type": "string",
+      "description": "Repo-relative path to the captured output log."
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC capture time (ISO 8601)."
+    },
+    "session": {
+      "type": "string",
+      "description": "Agent session id when the harness exports AGENT_DONE_SESSION; empty otherwise."
+    }
+  }
+}
