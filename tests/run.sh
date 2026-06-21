@@ -7,6 +7,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 DONE_GATE="$REPO/done-gate.sh"
 STOP_GATE="$REPO/stop-gate.sh"
+INSTALLER="$REPO/install.sh"
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -27,6 +28,29 @@ newsandbox() {
 
 PAYLOAD='{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false}'
 RETRY='{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":true}'
+
+echo "== install.sh =="
+
+# 1. installer copies both scripts and makes them executable.
+d="$(newsandbox)"
+( cd "$d" && AGENT_DONE_LOCAL_SRC="$REPO" sh "$INSTALLER" >/dev/null 2>&1 )
+[ "$?" = "0" ] && [ -x "$d/done-gate.sh" ] && [ -x "$d/stop-gate.sh" ] \
+  && ok "installer copies both gate scripts as executable" || bad "installer copy/chmod"
+
+# 2. installer adds .agent-proof/ to .gitignore once, even when re-run.
+d="$(newsandbox)"
+( cd "$d" && AGENT_DONE_LOCAL_SRC="$REPO" sh "$INSTALLER" >/dev/null 2>&1 \
+  && AGENT_DONE_LOCAL_SRC="$REPO" sh "$INSTALLER" >/dev/null 2>&1 )
+rc="$?"
+count="$(grep -Fx '.agent-proof/' "$d/.gitignore" 2>/dev/null | wc -l | tr -d ' ')"
+[ "$rc" = "0" ] && [ "$count" = "1" ] \
+  && ok "installer adds .agent-proof/ to .gitignore idempotently" || bad "installer gitignore idempotency"
+
+# 3. installed done-gate works end-to-end in the target repo.
+d="$(newsandbox)"
+( cd "$d" && AGENT_DONE_LOCAL_SRC="$REPO" sh "$INSTALLER" >/dev/null 2>&1 \
+  && bash ./done-gate.sh capture --label t -- true >/dev/null 2>&1 )
+[ "$?" = "0" ] && ok "installed done-gate captures a passing check" || bad "installed done-gate smoke"
 
 echo "== done-gate.sh =="
 
