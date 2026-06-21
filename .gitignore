@@ -1,0 +1,7 @@
+# Proof receipts are local runtime artifacts, never committed.
+.agent-proof/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
