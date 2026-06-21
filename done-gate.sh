@@ -12,8 +12,8 @@
 # Subcommands:
 #   capture --label L [--run R] -- CMD [ARGS...]
 #       Run CMD, stream its output to the console AND a log file, then append a
-#       JSONL receipt (label, command, exit_code, sha256, log, at, session).
-#       Updates the latest-run pointer. Exits with CMD's own exit code.
+#       JSONL receipt (label, command, exit_code, sha256, log, at, epoch,
+#       session). Updates the latest-run pointer. Exits with CMD's own code.
 #
 #   verify --label L [--run R] --sha HEX
 #       Exit 0 iff the ledger's recorded sha256 for L equals HEX. The proof
@@ -35,8 +35,20 @@ PROOF_DIR="${AGENT_DONE_DIR:-$ROOT/.agent-proof}"
 
 die() { printf 'done-gate: %s\n' "$1" >&2; exit 2; }
 
+# Reject path-unsafe run ids / labels: they become directory and file names, so
+# anything outside a conservative allowlist (or containing "..") could escape
+# .agent-proof or collide. Keep the human label readable but filesystem-safe.
+valid_name() {
+  case "$1" in
+    ''|*..*) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 timestamp() { date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf 'unknown'; }
-run_stamp()  { date -u +%Y%m%dT%H%M%SZ    2>/dev/null || printf 'run'; }
+epoch()     { date +%s 2>/dev/null || printf '0'; }
+run_stamp() { date -u +%Y%m%dT%H%M%SZ 2>/dev/null || printf 'run'; }
 
 sha256_of_file() {
   local f="$1" c py=""
@@ -74,16 +86,18 @@ cmd_capture() {
   local label="" run="" ; local -a CMD=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --label) label="$2"; shift 2 ;;
-      --run)   run="$2";   shift 2 ;;
+      --label) [ "$#" -ge 2 ] || die "capture: --label requires a value"; label="$2"; shift 2 ;;
+      --run)   [ "$#" -ge 2 ] || die "capture: --run requires a value";   run="$2";   shift 2 ;;
       --)      shift; CMD=("$@"); break ;;
       *)       die "capture: unexpected arg '$1' (did you forget '--' before the command?)" ;;
     esac
   done
   [ -n "$label" ] || die "capture: --label is required"
   [ "${#CMD[@]}" -ge 1 ] || die "capture: a command after '--' is required"
+  valid_name "$label" || die "capture: --label must match [A-Za-z0-9._-] and contain no '..'"
 
   run="${run:-${AGENT_DONE_SESSION:-$(run_stamp)}}"
+  valid_name "$run" || die "capture: run id must match [A-Za-z0-9._-] and contain no '..'"
   local dir="$PROOF_DIR/$run"
   mkdir -p "$dir"
   local log="$dir/$label.log"
@@ -97,9 +111,9 @@ cmd_capture() {
   set -e
 
   local sha; sha="$(sha256_of_file "$log")"
-  printf '{"label":"%s","command":"%s","exit_code":%s,"sha256":"%s","log":"%s","at":"%s","session":"%s"}\n' \
+  printf '{"label":"%s","command":"%s","exit_code":%s,"sha256":"%s","log":"%s","at":"%s","epoch":%s,"session":"%s"}\n' \
     "$(json_escape "$label")" "$(json_escape "${CMD[*]}")" "$rc" "$sha" \
-    "$(json_escape "${log#"$ROOT/"}")" "$(timestamp)" \
+    "$(json_escape "${log#"$ROOT/"}")" "$(timestamp)" "$(epoch)" \
     "$(json_escape "${AGENT_DONE_SESSION:-}")" >> "$dir/ledger.jsonl"
 
   # Atomic latest-run pointer so a concurrent capture can't leave a torn file
@@ -114,9 +128,9 @@ cmd_verify() {
   local label="" run="" sha=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --label) label="$2"; shift 2 ;;
-      --run)   run="$2";   shift 2 ;;
-      --sha)   sha="$2";   shift 2 ;;
+      --label) [ "$#" -ge 2 ] || die "verify: --label requires a value"; label="$2"; shift 2 ;;
+      --run)   [ "$#" -ge 2 ] || die "verify: --run requires a value";   run="$2";   shift 2 ;;
+      --sha)   [ "$#" -ge 2 ] || die "verify: --sha requires a value";   sha="$2";   shift 2 ;;
       *)       die "verify: unexpected arg '$1'" ;;
     esac
   done
@@ -124,6 +138,7 @@ cmd_verify() {
   [ -n "$sha" ]   || die "verify: --sha is required"
   run="$(resolve_run_for_read "$run")"
   [ -n "$run" ] || die "verify: no run found (run a capture first or pass --run)"
+  valid_name "$run" || die "verify: invalid run id"
   local ledger="$PROOF_DIR/$run/ledger.jsonl"
   [ -f "$ledger" ] || die "verify: no ledger at $ledger"
 
@@ -150,12 +165,13 @@ cmd_show() {
   local run=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --run) run="$2"; shift 2 ;;
+      --run) [ "$#" -ge 2 ] || die "show: --run requires a value"; run="$2"; shift 2 ;;
       *)     die "show: unexpected arg '$1'" ;;
     esac
   done
   run="$(resolve_run_for_read "$run")"
   [ -n "$run" ] || die "show: no run found"
+  valid_name "$run" || die "show: invalid run id"
   local ledger="$PROOF_DIR/$run/ledger.jsonl"
   [ -f "$ledger" ] || die "show: no ledger at $ledger"
   printf '# proof ledger — run=%s\n' "$run"

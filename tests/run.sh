@@ -16,9 +16,12 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 gate() { printf '%s' "$1" | bash "$STOP_GATE" >/dev/null 2>&1; printf '%s' "$?"; }
 
 newsandbox() {
-  local d; d="$(mktemp -d)"
-  ( cd "$d" && git init -q && git config user.email t@t && git config user.name t \
-      && git commit -q --allow-empty -m init ) >/dev/null 2>&1
+  local d
+  d="$(mktemp -d 2>/dev/null)" || { echo "FATAL: mktemp -d failed" >&2; exit 99; }
+  if ! ( cd "$d" && git init -q && git config user.email t@t && git config user.name t \
+           && git commit -q --allow-empty -m init ) >/dev/null 2>&1; then
+    echo "FATAL: sandbox git init failed in $d" >&2; exit 99
+  fi
   printf '%s' "$d"
 }
 
@@ -35,11 +38,12 @@ d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/de
 d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" capture --label t -- false >/dev/null 2>&1 )
 [ "$?" = "1" ] && ok "capture propagates a failing exit code" || bad "capture failing exit"
 
-# 3. ledger records sha256 + exit_code.
+# 3. ledger records sha256 + exit_code + epoch.
 d="$(newsandbox)"; ( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
 if grep -q '"sha256":"[0-9a-f]' "$d/.agent-proof"/*/ledger.jsonl 2>/dev/null \
-   && grep -q '"exit_code":0' "$d/.agent-proof"/*/ledger.jsonl 2>/dev/null; then
-  ok "ledger records sha256 and exit_code"
+   && grep -q '"exit_code":0' "$d/.agent-proof"/*/ledger.jsonl 2>/dev/null \
+   && grep -q '"epoch":[0-9]' "$d/.agent-proof"/*/ledger.jsonl 2>/dev/null; then
+  ok "ledger records sha256, exit_code and epoch"
 else bad "ledger contents"; fi
 
 # 4. verify matches the recorded hash.
@@ -49,29 +53,39 @@ d="$(newsandbox)"
   bash "$DONE_GATE" verify --label t --sha "$sha" >/dev/null 2>&1 )
 [ "$?" = "0" ] && ok "verify accepts the matching hash" || bad "verify match"
 
+# 5. path-unsafe label is rejected (no traversal).
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --label "../evil" -- true >/dev/null 2>&1 )
+[ "$?" = "2" ] && ok "rejects a path-unsafe --label" || bad "label validation"
+
+# 6. valueless option fails controlled (not an unbound-var crash).
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --label >/dev/null 2>&1 )
+[ "$?" = "2" ] && ok "valueless --label fails with exit 2" || bad "valueless option"
+
 echo "== stop-gate.sh =="
 
-# 5. block when no proof exists.
+# 7. block when no proof exists.
 d="$(newsandbox)"; rc="$( cd "$d" && gate "$PAYLOAD" )"
 [ "$rc" = "2" ] && ok "blocks when no proof receipt exists" || bad "no-proof block (got $rc)"
 
-# 6. allow after a fresh passing capture.
+# 8. allow after a fresh passing capture.
 d="$(newsandbox)"
 rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1; gate "$PAYLOAD" )"
 [ "$rc" = "0" ] && ok "allows after a fresh passing check" || bad "fresh-pass allow (got $rc)"
 
-# 7. block when the most recent check failed.
+# 9. block when the most recent check failed.
 d="$(newsandbox)"
 rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- false >/dev/null 2>&1; gate "$PAYLOAD" )"
 [ "$rc" = "2" ] && ok "blocks when the latest check failed" || bad "failed-check block (got $rc)"
 
-# 8. block on a second stop with no NEW passing check (consume-on-allow).
+# 10. block on a second stop with no NEW passing check (consume-on-allow).
 d="$(newsandbox)"
 rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
        gate "$PAYLOAD" >/dev/null; gate "$PAYLOAD" )"
 [ "$rc" = "2" ] && ok "blocks a repeat stop without a new receipt" || bad "consume block (got $rc)"
 
-# 9. allow again after a new passing capture.
+# 11. allow again after a new passing capture.
 d="$(newsandbox)"
 rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
        gate "$PAYLOAD" >/dev/null
@@ -79,18 +93,44 @@ rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
        gate "$PAYLOAD" )"
 [ "$rc" = "0" ] && ok "allows again after a new passing check" || bad "re-verify allow (got $rc)"
 
-# 10. loop-guard: stop_hook_active=true always allows (never loops).
+# 12. stop_hook_active does NOT bypass the gate (no blanket allow).
 d="$(newsandbox)"; rc="$( cd "$d" && gate "$RETRY" )"
-[ "$rc" = "0" ] && ok "loop-guard allows on stop_hook_active" || bad "loop-guard (got $rc)"
+[ "$rc" = "2" ] && ok "stop_hook_active does not bypass an unproven stop" || bad "loop-guard bypass (got $rc)"
 
-# 11. stale ledger is rejected (freshness guard).
+# 13. retry cap fails OPEN as an anti-infinite-loop safety valve.
+d="$(newsandbox)"
+rc="$( cd "$d" && AGENT_DONE_MAX_RETRIES=2 gate "$PAYLOAD" >/dev/null
+       AGENT_DONE_MAX_RETRIES=2 gate "$PAYLOAD" )"
+[ "$rc" = "0" ] && ok "fails open after MAX_RETRIES (no infinite loop)" || bad "retry cap (got $rc)"
+
+# 14. stale ledger is rejected (freshness via recorded epoch).
 d="$(newsandbox)"
 ( cd "$d" && AGENT_DONE_TTL=1 bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
 sleep 2
 rc="$( cd "$d" && AGENT_DONE_TTL=1 gate "$PAYLOAD" )"
-[ "$rc" = "2" ] && ok "blocks a stale (expired-TTL) ledger" || bad "stale-ledger block (got $rc)"
+[ "$rc" = "2" ] && ok "blocks a stale (expired-TTL) receipt" || bad "stale-receipt block (got $rc)"
 
-# 12. escape hatch always allows.
+# 15. empty latest pointer fails CLOSED.
+d="$(newsandbox)"
+( cd "$d" && mkdir -p .agent-proof && : > .agent-proof/latest )
+rc="$( cd "$d" && gate "$PAYLOAD" )"
+[ "$rc" = "2" ] && ok "blocks on an empty latest pointer (fail closed)" || bad "empty-latest (got $rc)"
+
+# 16. unparseable receipt fails CLOSED.
+d="$(newsandbox)"
+( cd "$d" && mkdir -p .agent-proof/r1 && printf 'not json\n' > .agent-proof/r1/ledger.jsonl \
+    && printf 'r1\n' > .agent-proof/latest )
+rc="$( cd "$d" && gate "$PAYLOAD" )"
+[ "$rc" = "2" ] && ok "blocks on an unparseable receipt (fail closed)" || bad "unparseable (got $rc)"
+
+# 17. consume-persistence failure fails CLOSED (.gate cannot be created).
+d="$(newsandbox)"
+rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
+       : > .agent-proof/.gate    # a regular file blocks mkdir of the .gate dir
+       gate "$PAYLOAD" )"
+[ "$rc" = "2" ] && ok "blocks when consume cannot be persisted" || bad "consume-persist (got $rc)"
+
+# 18. escape hatch always allows.
 d="$(newsandbox)"
 rc="$( cd "$d" && printf '%s' "$PAYLOAD" | AGENT_DONE_OFF=1 bash "$STOP_GATE" >/dev/null 2>&1; printf '%s' "$?" )"
 [ "$rc" = "0" ] && ok "escape hatch (AGENT_DONE_OFF=1) allows" || bad "escape hatch (got $rc)"
