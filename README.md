@@ -1,9 +1,12 @@
 # agent-done-or-not
 
+[![Works with Claude Code · Cursor · Codex](https://img.shields.io/badge/works_with-Claude_Code_·_Cursor_·_Codex-black?style=for-the-badge&logo=anthropic&logoColor=white)](#install-60-seconds)
+[![GitHub stars](https://img.shields.io/github/stars/mohamedzhioua/agent-done-or-not?style=for-the-badge&logo=github&color=black)](https://github.com/mohamedzhioua/agent-done-or-not/stargazers)
+
 [![CI](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml/badge.svg)](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/tag/mohamedzhioua/agent-done-or-not?label=release)](https://github.com/mohamedzhioua/agent-done-or-not/releases)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Your AI agent just said "Done ✅" — but did it verify?** This one-file gate
 forces it to *prove* the claim with a hash before it can declare success. Works
