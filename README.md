@@ -102,5 +102,6 @@ export AGENT_DONE_OFF=1   # disable the gate
 
 ## Credits
 
-Extracted and sharpened from the evidence/verify-gate layer of an AI engineering
-OS ("replace trust with evidence"). MIT licensed — fork it, ship it.
+Extracted and sharpened from the evidence/verify-gate layer of
+**[zhioua-os](https://github.com/zhioua-os)**, an AI engineering OS for coding
+agents ("replace trust with evidence"). MIT licensed — fork it, ship it.
