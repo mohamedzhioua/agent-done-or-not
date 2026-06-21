@@ -1,8 +1,15 @@
 # Install — 60 seconds
 
-You need two files at your repo root: `done-gate.sh` (the engine) and, for hard
-enforcement, `stop-gate.sh` (the hook). Add `.agent-proof/` to your
-`.gitignore`.
+From the repo you want to protect:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/install.sh | sh
+```
+
+The installer writes only to the current directory: `done-gate.sh`,
+`stop-gate.sh`, executable bits, and a `.agent-proof/` entry in `.gitignore`.
+
+Inspect-first alternative:
 
 ```bash
 curl -O https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/done-gate.sh

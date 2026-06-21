@@ -53,12 +53,13 @@ with the command's own code, **a failing check can't be dressed up as success.**
 
 ## Install (60 seconds)
 
+From the repo you want to protect:
+
 ```bash
-curl -O https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/done-gate.sh
-curl -O https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/stop-gate.sh
-chmod +x done-gate.sh stop-gate.sh
-echo '.agent-proof/' >> .gitignore
+curl -fsSL https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/install.sh | sh
 ```
+
+Prefer to inspect first? Use the manual two-file install in **[examples/install.md](examples/install.md)**.
 
 Then wire the rule + hook for your tool — see **[examples/install.md](examples/install.md)**.
 

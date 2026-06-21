@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `install.sh` one-liner installer for copying `done-gate.sh` and
+  `stop-gate.sh` into the current repo, marking them executable, and adding
+  `.agent-proof/` to `.gitignore` idempotently.
+- Offline installer test coverage via `AGENT_DONE_LOCAL_SRC`.
+
 ## [0.2.0] — 2026-06-21
 
 Makes the tool genuinely useful beyond the agent loop (CI / pre-commit) and far
