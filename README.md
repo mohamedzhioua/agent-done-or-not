@@ -5,6 +5,7 @@
 [![skills.sh](https://skills.sh/b/mohamedzhioua/agent-done-or-not)](https://skills.sh/mohamedzhioua/agent-done-or-not)
 
 [![CI](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml/badge.svg)](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml)
+[![npm](https://img.shields.io/npm/v/agent-done-or-not?logo=npm)](https://www.npmjs.com/package/agent-done-or-not)
 [![Release](https://img.shields.io/github/v/tag/mohamedzhioua/agent-done-or-not?label=release)](https://github.com/mohamedzhioua/agent-done-or-not/releases)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
