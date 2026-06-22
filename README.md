@@ -90,6 +90,24 @@ npx agent-done-or-not assert --label test --ttl 3600
 Requires `bash` on PATH (Git Bash on Windows); the npm package is a thin wrapper
 over the same `done-gate.sh`. Publishing to npm is the maintainer's step.
 
+### Homebrew / Scoop
+
+Install a global `agent-done-or-not` launcher (both wrap the same `done-gate.sh`):
+
+```bash
+# macOS / Linux
+brew install mohamedzhioua/tap/agent-done-or-not
+```
+
+```powershell
+# Windows (requires Git for Windows for bash)
+scoop bucket add agent-done-or-not https://github.com/mohamedzhioua/scoop-bucket
+scoop install agent-done-or-not
+```
+
+The pinned formula and manifest live in [`packaging/`](packaging/); see
+[`packaging/README.md`](packaging/README.md) for publishing them to a tap/bucket.
+
 ### GitHub Action
 
 Use the composite action to gate a workflow job on receipts created earlier in

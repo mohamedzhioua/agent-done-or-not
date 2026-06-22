@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Homebrew formula (`packaging/homebrew/agent-done-or-not.rb`) and Scoop manifest
+  (`packaging/scoop/agent-done-or-not.json`), both pinned to the v0.5.0 source
+  tarball + SHA-256. Each is a thin wrapper that installs the canonical
+  `done-gate.sh`/`stop-gate.sh` engine and puts an `agent-done-or-not` launcher
+  on PATH; `packaging/README.md` documents the tap/bucket publish steps.
+
 ## [0.5.0] — 2026-06-22
 
 ### Added
