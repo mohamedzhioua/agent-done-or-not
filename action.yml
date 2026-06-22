@@ -1,0 +1,73 @@
+name: Agent Done Or Not
+description: Gate a GitHub Actions job on proof-of-done receipts.
+
+inputs:
+  mode:
+    description: Action mode. Only "assert" is currently supported.
+    required: false
+    default: assert
+  labels:
+    description: Space-separated receipt labels to require.
+    required: false
+    default: ""
+  ttl:
+    description: Maximum receipt age in seconds. Empty uses done-gate.sh default behavior.
+    required: false
+    default: ""
+  allow-command-regex:
+    description: Regex that the recorded command must match.
+    required: false
+    default: ""
+  json:
+    description: Emit machine-readable JSON output when "true".
+    required: false
+    default: "false"
+  working-directory:
+    description: Directory to run the assertion from.
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Assert proof-of-done receipts
+      shell: bash
+      env:
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_LABELS: ${{ inputs.labels }}
+        INPUT_TTL: ${{ inputs.ttl }}
+        INPUT_ALLOW_COMMAND_REGEX: ${{ inputs.allow-command-regex }}
+        INPUT_JSON: ${{ inputs.json }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+
+        cd "$INPUT_WORKING_DIRECTORY"
+
+        if [ "$INPUT_MODE" != "assert" ]; then
+          printf 'agent-done-or-not action: unsupported mode "%s"; only "assert" is supported.\n' "$INPUT_MODE" >&2
+          exit 2
+        fi
+
+        args=(assert)
+
+        if [ -n "$INPUT_LABELS" ]; then
+          read -r -a labels <<< "$INPUT_LABELS"
+          for label in "${labels[@]}"; do
+            args+=(--label "$label")
+          done
+        fi
+
+        if [ -n "$INPUT_TTL" ]; then
+          args+=(--ttl "$INPUT_TTL")
+        fi
+
+        if [ -n "$INPUT_ALLOW_COMMAND_REGEX" ]; then
+          args+=(--allow-command-regex "$INPUT_ALLOW_COMMAND_REGEX")
+        fi
+
+        if [ "$INPUT_JSON" = "true" ]; then
+          args+=(--json)
+        fi
+
+        bash "$GITHUB_ACTION_PATH/done-gate.sh" "${args[@]}"

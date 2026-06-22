@@ -225,6 +225,34 @@ out="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
 printf '%s' "$out" | python -c "import sys,json; d=json.load(sys.stdin); assert isinstance(d['receipts'],list) and d['receipts'][0]['label']=='t'" >/dev/null 2>&1 \
   && ok "show --json emits a receipts array" || bad "show --json"
 
+echo "== GitHub Action =="
+
+# 29. action.yml declares a composite action with the expected inputs.
+if [ -f "$REPO/action.yml" ] \
+   && grep -q '^  using: composite$' "$REPO/action.yml" \
+   && grep -q '^  mode:$' "$REPO/action.yml" \
+   && grep -q '^  labels:$' "$REPO/action.yml" \
+   && grep -q '^  working-directory:$' "$REPO/action.yml"; then
+  ok "action.yml declares the composite action inputs"
+else bad "action.yml composite/input structure"; fi
+
+# 30. action.yml resolves its own done-gate.sh and expands labels into flags.
+if grep -q 'GITHUB_ACTION_PATH/done-gate.sh' "$REPO/action.yml" \
+   && grep -Fq 'read -r -a labels <<< "$INPUT_LABELS"' "$REPO/action.yml" \
+   && grep -Fq 'args+=(--ttl "$INPUT_TTL")' "$REPO/action.yml" \
+   && grep -Fq 'args+=(--allow-command-regex "$INPUT_ALLOW_COMMAND_REGEX")' "$REPO/action.yml"; then
+  ok "action.yml builds assert arguments without empty optional flags"
+else bad "action.yml argument construction"; fi
+
+# 31. the self-test workflow dogfoods success and expected-failure paths.
+if [ -f "$REPO/.github/workflows/action-selftest.yml" ] \
+   && grep -q 'actions/checkout@v4' "$REPO/.github/workflows/action-selftest.yml" \
+   && grep -q 'uses: ./' "$REPO/.github/workflows/action-selftest.yml" \
+   && grep -q 'continue-on-error: true' "$REPO/.github/workflows/action-selftest.yml" \
+   && grep -q 'steps.missing_receipt.outcome' "$REPO/.github/workflows/action-selftest.yml"; then
+  ok "action self-test workflow covers success and expected failure"
+else bad "action self-test workflow structure"; fi
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

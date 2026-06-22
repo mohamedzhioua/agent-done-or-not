@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- GitHub composite Action for asserting proof-of-done receipts from CI jobs.
 - `install.sh` one-liner installer for copying `done-gate.sh` and
   `stop-gate.sh` into the current repo, marking them executable, and adding
   `.agent-proof/` to `.gitignore` idempotently.
