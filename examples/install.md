@@ -50,6 +50,15 @@ the plugin wires `stop-gate.sh` as the `Stop` hook for hard enforcement. You
 still drop the `CLAUDE.md` rule into the protected repo for the agent-facing
 instruction.
 
+### Agent Skill
+
+```bash
+npx skills add mohamedzhioua/agent-done-or-not
+```
+
+Installs the proof-of-done rule as a skill for Claude Code / Codex / other
+agents.
+
 ## Cursor
 
 Cursor has no hard stop hook, so the rule is the enforcement surface. Copy this

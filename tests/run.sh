@@ -292,6 +292,28 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); stop=d.get('hooks',
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); plugins=d.get('plugins',[]); assert any(p.get('name') == 'agent-done-or-not' for p in plugins)" "$REPO/.claude-plugin/marketplace.json" >/dev/null 2>&1 \
   && ok ".claude-plugin/marketplace.json lists agent-done-or-not" || bad "marketplace.json"
 
+echo "== agent skill =="
+
+SKILL="$REPO/skills/done-or-not/SKILL.md"
+
+# 39. skill package exists at the nested skills.sh-compatible path.
+if [ -f "$SKILL" ]; then
+  ok "skills/done-or-not/SKILL.md exists"
+else bad "skills/done-or-not/SKILL.md missing"; fi
+
+# 40. skill frontmatter declares the required name and description.
+if [ "$(sed -n '1p' "$SKILL" 2>/dev/null)" = "---" ] \
+   && [ "$(sed -n '2,/^---$/p' "$SKILL" 2>/dev/null | grep -c '^---$')" = "1" ] \
+   && sed -n '2,/^---$/p' "$SKILL" 2>/dev/null | grep -q '^name:[[:space:]]*done-or-not[[:space:]]*$' \
+   && sed -n '2,/^---$/p' "$SKILL" 2>/dev/null | grep -Eq '^description:[[:space:]]*[^[:space:]].*'; then
+  ok "skill frontmatter declares name and non-empty description"
+else bad "skill frontmatter"; fi
+
+# 41. skill body points agents at the proof capture command.
+if grep -Fq 'done-gate.sh capture' "$SKILL" 2>/dev/null; then
+  ok "skill body references done-gate.sh capture"
+else bad "skill capture instruction"; fi
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Agent Skill package at `skills/done-or-not/SKILL.md` for installing the
+  proof-of-done rule with `npx skills add mohamedzhioua/agent-done-or-not`.
 - Claude Code plugin wrapper manifest, Stop hook wiring, and marketplace catalog
   for installing hard proof-of-done enforcement without duplicating the bash
   core scripts.

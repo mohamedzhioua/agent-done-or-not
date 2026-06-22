@@ -2,6 +2,7 @@
 
 [![Works with Claude Code · Cursor · Codex](https://img.shields.io/badge/works_with-Claude_Code_·_Cursor_·_Codex-black?style=for-the-badge&logo=anthropic&logoColor=white)](#install-60-seconds)
 [![GitHub stars](https://img.shields.io/github/stars/mohamedzhioua/agent-done-or-not?style=for-the-badge&logo=github&color=black)](https://github.com/mohamedzhioua/agent-done-or-not/stargazers)
+[![skills.sh](https://skills.sh/b/mohamedzhioua/agent-done-or-not)](https://skills.sh/mohamedzhioua/agent-done-or-not)
 
 [![CI](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml/badge.svg)](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/tag/mohamedzhioua/agent-done-or-not?label=release)](https://github.com/mohamedzhioua/agent-done-or-not/releases)
@@ -66,6 +67,15 @@ Then wire the rule + hook for your tool — see **[examples/install.md](examples
 - **Claude Code** → drop in `CLAUDE.md` + the `Stop` hook = hard enforcement.
 - **Cursor** → drop in `.cursorrules`.
 - **Codex / others** → drop in `AGENTS.md`.
+
+### Agent Skill
+
+```bash
+npx skills add mohamedzhioua/agent-done-or-not
+```
+
+Installs the proof-of-done rule as a skill for Claude Code / Codex / other
+agents.
 
 ### GitHub Action
 
