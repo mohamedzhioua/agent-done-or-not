@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `.pre-commit-hooks.yaml` and `hooks/pre-commit-assert.sh` -- consume this repo
+  as a pre-commit framework hook (`id: agent-done-assert`) to block commits
+  unless a fresh passing proof-of-done receipt exists in `.agent-proof/`.
 - GitHub composite Action for asserting proof-of-done receipts from CI jobs.
 - `install.sh` one-liner installer for copying `done-gate.sh` and
   `stop-gate.sh` into the current repo, marking them executable, and adding

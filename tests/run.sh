@@ -253,6 +253,27 @@ if [ -f "$REPO/.github/workflows/action-selftest.yml" ] \
   ok "action self-test workflow covers success and expected failure"
 else bad "action self-test workflow structure"; fi
 
+
+echo "== pre-commit hook =="
+
+# 32. .pre-commit-hooks.yaml exists and declares the expected hook fields.
+if [ -f "$REPO/.pre-commit-hooks.yaml" ]    && grep -q 'id: agent-done-assert' "$REPO/.pre-commit-hooks.yaml"    && grep -q 'pass_filenames: false' "$REPO/.pre-commit-hooks.yaml"    && grep -q 'entry: hooks/pre-commit-assert.sh' "$REPO/.pre-commit-hooks.yaml"; then
+  ok ".pre-commit-hooks.yaml declares agent-done-assert hook"
+else bad ".pre-commit-hooks.yaml missing or malformed"; fi
+
+# 33. hooks/pre-commit-assert.sh exists and is executable.
+if [ -x "$REPO/hooks/pre-commit-assert.sh" ]; then
+  ok "hooks/pre-commit-assert.sh exists and is executable"
+else bad "hooks/pre-commit-assert.sh not found or not executable"; fi
+
+# 34. E2E pass: wrapper exits 0 when a fresh receipt exists in the sandbox cwd.
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1   && bash "$REPO/hooks/pre-commit-assert.sh" --ttl 3600 >/dev/null 2>&1 )   && ok "pre-commit wrapper exits 0 with a fresh receipt"   || bad "pre-commit wrapper exit 0 path"
+
+# 35. E2E fail: wrapper exits non-zero when no receipt exists.
+d="$(newsandbox)"
+( cd "$d" && bash "$REPO/hooks/pre-commit-assert.sh" >/dev/null 2>&1 )   && bad "pre-commit wrapper should exit non-zero with no receipt"   || ok "pre-commit wrapper exits non-zero with no receipt"
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

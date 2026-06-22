@@ -69,6 +69,21 @@ same checkout:
 Run `actions/checkout` first, then produce receipts earlier in the job with
 `bash done-gate.sh capture` before the action asserts them.
 
+### Pre-commit hook
+
+Add to `.pre-commit-config.yaml` in any repo that uses this tool:
+
+```yaml
+repos:
+  - repo: https://github.com/mohamedzhioua/agent-done-or-not
+    rev: v0.2.0
+    hooks:
+      - id: agent-done-assert
+```
+
+Commits are blocked unless a fresh passing receipt exists in `.agent-proof/`.
+Pass extra options via `args:`, e.g. `args: [--label, test, --ttl, "3600"]`.
+
 ---
 
 ## Use it
