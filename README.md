@@ -100,6 +100,27 @@ bash done-gate.sh show
 
 See [`examples/proof.jsonl`](examples/proof.jsonl) for a full ledger sample.
 
+### Pre-commit hook
+
+Add this to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/mohamedzhioua/agent-done-or-not
+    rev: v0.2.0
+    hooks:
+      - id: agent-done-assert
+```
+
+This runs `done-gate.sh assert` before every commit and **blocks** unless a fresh
+passing proof-of-done receipt exists in `.agent-proof/`. Pass extra options via
+`args:`, for example:
+
+```yaml
+      - id: agent-done-assert
+        args: [--label, test, --ttl, "3600"]
+```
+
 ### Gate your CI / pre-commit too
 
 `assert` checks the ledger without running anything — perfect for a CI step or a
