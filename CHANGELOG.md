@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-22
+
 ### Added
 - npm package wrapper (`agent-done-or-not`) — run the gate via
   `npx agent-done-or-not <capture|assert|verify|show> …` without cloning. A
