@@ -108,6 +108,19 @@ scoop install agent-done-or-not
 The pinned formula and manifest live in [`packaging/`](packaging/); see
 [`packaging/README.md`](packaging/README.md) for publishing them to a tap/bucket.
 
+### Windows (native PowerShell — no bash needed)
+
+`done-gate.ps1` is a native port of the engine with identical behavior and an
+identical receipt format. It runs on Windows PowerShell 5.1 and PowerShell 7+
+with built-ins only — no Git Bash required:
+
+```powershell
+pwsh done-gate.ps1 capture --label test -- your-test-command
+pwsh done-gate.ps1 assert --label test --ttl 3600
+```
+
+Receipts written by `done-gate.ps1` and `done-gate.sh` are interchangeable.
+
 ### GitHub Action
 
 Use the composite action to gate a workflow job on receipts created earlier in

@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Native PowerShell port of the engine: `done-gate.ps1` (capture / assert /
+  verify / show, `--json`, all flags and env vars) with behavior and a receipt
+  format identical to `done-gate.sh` — runs on Windows PowerShell 5.1 and
+  PowerShell 7+ with built-ins only, so Windows no longer needs Git Bash.
+  Receipts from the two engines are interchangeable. Parity tests in
+  `tests/run.ps1` (19 scenarios, pass under both PS hosts) are also exercised by
+  `tests/run.sh` when a PowerShell host is on PATH (so CI covers them).
 - Homebrew formula (`packaging/homebrew/agent-done-or-not.rb`) and Scoop manifest
   (`packaging/scoop/agent-done-or-not.json`), both pinned to the v0.5.0 source
   tarball + SHA-256. Each is a thin wrapper that installs the canonical
