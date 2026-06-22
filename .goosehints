@@ -1,0 +1,15 @@
+# Proof-of-Done Rule (agent-done-or-not)
+
+Before claiming a task is complete, you MUST verify it through the proof gate.
+Claiming "done" without a passing receipt is not allowed.
+
+- Run the command that proves the work through the gate:
+  `bash done-gate.sh capture --label check -- <your verifying command>`
+  It records the command, exit code, and a SHA-256 of the output, and exits with
+  the command's own code — so a failing check fails here.
+- Only report completion after a PASSING receipt.
+- If the check fails, fix the code and capture again. Never report success on a
+  red check.
+
+On Windows, use the native PowerShell gate:
+  `pwsh -File done-gate.ps1 capture --label check -- <your verifying command>`

@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-22
+
+Completes Windows-native support and broadens agent coverage to every major
+AI coding tool on the skills.sh platform.
+
 ### Added
 - Native PowerShell port of the engine: `done-gate.ps1` (capture / assert /
   verify / show, `--json`, all flags and env vars) with behavior and a receipt
@@ -14,11 +19,31 @@ All notable changes to this project are documented here. The format follows
   Receipts from the two engines are interchangeable. Parity tests in
   `tests/run.ps1` (19 scenarios, pass under both PS hosts) are also exercised by
   `tests/run.sh` when a PowerShell host is on PATH (so CI covers them).
+- `stop-gate.ps1` — native PowerShell Stop-event hook, a full parity port of
+  `stop-gate.sh`. All 13 trust rules preserved: escape hatch, fail-closed on
+  malformed/missing/stale state, freshness via receipt-recorded epoch, atomic
+  consume-on-allow, and the retry counter with fail-open safety valve.
+  Wires into Claude Code `settings.json` with one `powershell -NoProfile -File`
+  command. 3 new parity test scenarios added to `tests/run.ps1`.
 - Homebrew formula (`packaging/homebrew/agent-done-or-not.rb`) and Scoop manifest
   (`packaging/scoop/agent-done-or-not.json`), both pinned to the v0.5.0 source
   tarball + SHA-256. Each is a thin wrapper that installs the canonical
   `done-gate.sh`/`stop-gate.sh` engine and puts an `agent-done-or-not` launcher
   on PATH; `packaging/README.md` documents the tap/bucket publish steps.
+- Agent rules files for the full skills.sh agent roster:
+  - `.windsurfrules` — Windsurf
+  - `.clinerules` — Cline
+  - `.roo/rules/done-or-not.md` — Roo
+  - `.zed/prompts/done-or-not.md` — Zed
+  - `.goosehints` — Goose
+  All five carry the same proof-of-done rule prose as `.cursorrules` and
+  `AGENTS.md`, adapted to each agent's native file format and path convention.
+- CI templates for GitLab CI (`docs/ci-templates/gitlab-ci.yml`) and Azure
+  DevOps (`docs/ci-templates/azure-devops.yml`), joining the existing GitHub
+  Actions composite action.
+- Improved `skills/done-or-not/SKILL.md`: richer description, 20+ keywords for
+  skills.sh discovery, PowerShell usage examples, full installation table, and
+  configuration reference.
 
 ## [0.5.0] — 2026-06-22
 

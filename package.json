@@ -1,6 +1,6 @@
 {
   "name": "agent-done-or-not",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Proof-of-done gate that makes AI agents prove a task is done before claiming it.",
   "bin": {
     "agent-done-or-not": "bin/agent-done-or-not.js"
@@ -9,10 +9,15 @@
     "bin/",
     "done-gate.sh",
     "stop-gate.sh",
+    "done-gate.ps1",
+    "stop-gate.ps1",
     "proof.schema.json",
     "CLAUDE.md",
     "AGENTS.md",
     ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    ".goosehints",
     "README.md",
     "LICENSE"
   ],
@@ -33,10 +38,18 @@
     "claude-code",
     "codex",
     "cursor",
+    "windsurf",
+    "cline",
+    "roo",
+    "zed",
+    "goose",
     "ai-agents",
     "ci",
     "verification",
     "proof-of-done",
-    "hooks"
+    "hooks",
+    "anti-hallucination",
+    "tamper-evident",
+    "enforcement"
   ]
 }

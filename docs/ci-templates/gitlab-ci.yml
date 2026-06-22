@@ -1,0 +1,60 @@
+# agent-done-or-not — GitLab CI template
+#
+# Include this job in your pipeline to block merges unless a fresh,
+# passing proof-of-done receipt exists in .agent-proof/.
+#
+# Usage — add to your .gitlab-ci.yml:
+#
+#   include:
+#     - project: mohamedzhioua/agent-done-or-not
+#       ref: v0.6.0
+#       file: docs/ci-templates/gitlab-ci.yml
+#
+# Or copy the job definition below directly into your .gitlab-ci.yml.
+#
+# The job calls `done-gate.sh assert`, which reads the receipts from
+# .agent-proof/ and exits non-zero if any required receipt is missing,
+# stale, or from a failing check.
+#
+# To assert a specific label (e.g. the "test" receipt from your agent loop):
+#   variables:
+#     AGENT_DONE_LABELS: "test"
+#
+# To assert multiple labels:
+#   variables:
+#     AGENT_DONE_LABELS: "test build"
+
+agent-done-assert:
+  stage: verify
+  image: bash:5
+  variables:
+    AGENT_DONE_LABELS: ""
+    AGENT_DONE_TTL: "3600"
+    AGENT_DONE_ALLOW_COMMAND_REGEX: ""
+  before_script:
+    - apk add --no-cache git curl ca-certificates
+    - |
+      if [ ! -f done-gate.sh ]; then
+        curl -fsSL https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/install.sh | sh
+      fi
+  script:
+    - |
+      args=""
+      for label in $AGENT_DONE_LABELS; do
+        args="$args --label $label"
+      done
+      if [ -n "$AGENT_DONE_TTL" ]; then
+        args="$args --ttl $AGENT_DONE_TTL"
+      fi
+      if [ -n "$AGENT_DONE_ALLOW_COMMAND_REGEX" ]; then
+        args="$args --allow-command-regex $AGENT_DONE_ALLOW_COMMAND_REGEX"
+      fi
+      bash done-gate.sh assert $args
+  artifacts:
+    when: always
+    paths:
+      - .agent-proof/
+    expire_in: 7 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

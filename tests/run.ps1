@@ -9,6 +9,7 @@ if (-not $PSExe) { $PSExe = 'pwsh' }
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Repo = Split-Path -Parent $Here
 $DoneGate = Join-Path $Repo 'done-gate.ps1'
+$StopGate = Join-Path $Repo 'stop-gate.ps1'
 
 $pass = 0
 $fail = 0
@@ -71,6 +72,46 @@ function Invoke-Gate {
         ExitCode = $rc
         Stdout = $out
         Stderr = $err
+        ProofDir = $ProofDir
+        WorkDir = $WorkDir
+    }
+}
+
+function Invoke-StopGate {
+    param(
+        [string]$WorkDir,
+        [string]$ProofDir,
+        [AllowNull()][string]$Payload = $null
+    )
+    if ([string]::IsNullOrEmpty($ProofDir)) {
+        $ProofDir = Join-Path $WorkDir '.proof'
+    }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $PSExe
+    $psi.Arguments = '-NoProfile -File "' + $StopGate + '"'
+    $psi.WorkingDirectory = $WorkDir
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    if ($PSBoundParameters.ContainsKey('Payload')) {
+        $psi.RedirectStandardInput = $true
+    }
+    $psi.EnvironmentVariables['AGENT_DONE_DIR'] = $ProofDir
+
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    [void]$p.Start()
+    if ($PSBoundParameters.ContainsKey('Payload')) {
+        $p.StandardInput.Write($Payload)
+        $p.StandardInput.Close()
+    }
+    $stdout = $p.StandardOutput.ReadToEnd()
+    $stderr = $p.StandardError.ReadToEnd()
+    $p.WaitForExit()
+    return [pscustomobject]@{
+        ExitCode = $p.ExitCode
+        Stdout = $stdout
+        Stderr = $stderr
         ProofDir = $ProofDir
         WorkDir = $WorkDir
     }
@@ -221,6 +262,27 @@ try {
 } catch {
     Bad 'assert --json no-proof parse'
 }
+
+Write-Output '== stop-gate.ps1 =='
+
+$d = New-Sandbox
+$s = Invoke-StopGate $d (Join-Path $d '.proof')
+if ($s.ExitCode -eq 0) { Ok 'stop gate allows when stdin is not piped' } else { Bad "stop gate no-stdin (got $($s.ExitCode))" }
+
+$d = New-Sandbox
+$r = Invoke-Gate $d (@('capture', '--label', 'stop', '--') + (PassingCommand))
+$payload = '{"session_id":"s1","stop_hook_active":false}'
+$s = Invoke-StopGate $d $r.ProofDir $payload
+if ($s.ExitCode -eq 0) { Ok 'stop gate allows a fresh passing receipt' } else { Bad "stop gate fresh pass (got $($s.ExitCode))" }
+
+$d = New-Sandbox
+$proof = Join-Path $d '.proof'
+$run = 'run1'
+New-Item -ItemType Directory -Force -Path (Join-Path $proof $run) | Out-Null
+[IO.File]::WriteAllText((Join-Path $proof 'latest'), ($run + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+$payload = '{"session_id":"s2","stop_hook_active":false}'
+$s = Invoke-StopGate $d $proof $payload
+if ($s.ExitCode -eq 2) { Ok 'stop gate denies when the ledger is missing' } else { Bad "stop gate missing-ledger (got $($s.ExitCode))" }
 
 Write-Output ''
 Write-Output ("Result: {0} passed, {1} failed" -f $pass, $fail)

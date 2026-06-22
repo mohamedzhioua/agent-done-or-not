@@ -1,0 +1,74 @@
+# agent-done-or-not — Azure DevOps Pipeline step template
+#
+# Use this as a step template in your azure-pipelines.yml to gate
+# a pipeline stage on proof-of-done receipts from .agent-proof/.
+#
+# Usage — reference as a step template:
+#
+#   steps:
+#     - template: docs/ci-templates/azure-devops.yml
+#       parameters:
+#         labels: "test build"
+#         ttl: "3600"
+#
+# Or copy the individual steps below into your pipeline definition.
+
+parameters:
+  - name: labels
+    type: string
+    default: ""
+    displayName: "Space-separated receipt labels to require"
+  - name: ttl
+    type: string
+    default: "3600"
+    displayName: "Maximum receipt age in seconds"
+  - name: allowCommandRegex
+    type: string
+    default: ""
+    displayName: "Regex the recorded command must match"
+  - name: workingDirectory
+    type: string
+    default: "$(Build.SourcesDirectory)"
+    displayName: "Directory to run the assertion from"
+
+steps:
+  - task: Bash@3
+    displayName: "Install agent-done-or-not gate"
+    condition: not(fileExists('$(workingDirectory)/done-gate.sh'))
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: |
+        curl -fsSL https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/install.sh | sh
+
+  - task: Bash@3
+    displayName: "Assert proof-of-done receipts"
+    inputs:
+      targetType: inline
+      workingDirectory: ${{ parameters.workingDirectory }}
+      script: |
+        args=""
+        for label in ${{ parameters.labels }}; do
+          args="$args --label $label"
+        done
+        if [ -n "${{ parameters.ttl }}" ]; then
+          args="$args --ttl ${{ parameters.ttl }}"
+        fi
+        if [ -n "${{ parameters.allowCommandRegex }}" ]; then
+          args="$args --allow-command-regex '${{ parameters.allowCommandRegex }}'"
+        fi
+        bash done-gate.sh assert $args
+
+  # Windows variant — use this instead of the Bash tasks above on Windows agents
+  # - task: PowerShell@2
+  #   displayName: "Assert proof-of-done receipts (Windows)"
+  #   inputs:
+  #     targetType: inline
+  #     workingDirectory: ${{ parameters.workingDirectory }}
+  #     script: |
+  #       $args = @()
+  #       "${{ parameters.labels }}" -split ' ' | Where-Object { $_ } | ForEach-Object {
+  #         $args += '--label', $_
+  #       }
+  #       if ('${{ parameters.ttl }}') { $args += '--ttl', '${{ parameters.ttl }}' }
+  #       & pwsh -File done-gate.ps1 assert @args

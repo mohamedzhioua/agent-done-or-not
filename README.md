@@ -271,8 +271,9 @@ export AGENT_DONE_OFF=1   # disable the gate
 **Does it need Node / Python / jq?** No. Just `bash`, `git`, and one of
 `sha256sum` / `shasum` / `python` for hashing.
 
-**Windows?** Works under Git Bash / MSYS today (CI covers Linux + macOS; a
-native PowerShell port is on the roadmap).
+**Windows?** Fully supported natively. `done-gate.ps1` and `stop-gate.ps1`
+are native PowerShell ports (PS 5.1 + PS 7+, no Git Bash required). Receipts
+are interchangeable between the bash and PowerShell engines.
 
 **Won't it get my agent stuck?** No — after `AGENT_DONE_MAX_RETRIES` consecutive
 blocks it fails open with a loud warning, and `AGENT_DONE_OFF=1` disables it.
