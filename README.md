@@ -84,6 +84,19 @@ the same checkout:
 Run `actions/checkout` first, then produce receipts earlier in the job with
 `bash done-gate.sh capture` before the action asserts them.
 
+### Claude Code plugin
+
+Install the thin Claude Code plugin wrapper:
+
+```bash
+claude plugin marketplace add mohamedzhioua/agent-done-or-not
+claude plugin install agent-done-or-not
+```
+
+The plugin keeps the bash core canonical at the repo root and only wires
+`stop-gate.sh` as Claude Code's `Stop` hook for hard enforcement. You still drop
+the `CLAUDE.md` rule into the protected repo for the agent-facing instruction.
+
 ## Use
 
 ```bash

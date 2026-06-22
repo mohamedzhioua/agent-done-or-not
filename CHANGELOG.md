@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Claude Code plugin wrapper manifest, Stop hook wiring, and marketplace catalog
+  for installing hard proof-of-done enforcement without duplicating the bash
+  core scripts.
+
 ## [0.3.0] — 2026-06-22
 
 Distribution: three drop-in ways to adopt the gate in any repo — a one-liner

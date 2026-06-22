@@ -1,0 +1,21 @@
+{
+  "name": "agent-done-or-not",
+  "owner": {
+    "name": "mohamedzhioua"
+  },
+  "metadata": {
+    "description": "Hard proof-of-done enforcement for Claude Code via a Stop hook.",
+    "version": "0.3.0"
+  },
+  "plugins": [
+    {
+      "name": "agent-done-or-not",
+      "description": "Hard proof-of-done enforcement for Claude Code via a Stop hook.",
+      "version": "0.3.0",
+      "author": {
+        "name": "mohamedzhioua"
+      },
+      "source": "./"
+    }
+  ]
+}

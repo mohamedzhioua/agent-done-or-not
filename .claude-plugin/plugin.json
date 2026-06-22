@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "agent-done-or-not",
+  "version": "0.3.0",
+  "description": "Thin Claude Code plugin wrapper that wires proof-of-done Stop hook enforcement.",
+  "author": {
+    "name": "mohamedzhioua"
+  },
+  "homepage": "https://github.com/mohamedzhioua/agent-done-or-not",
+  "repository": "https://github.com/mohamedzhioua/agent-done-or-not",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "verification",
+    "ci",
+    "ai-agents",
+    "proof-of-done"
+  ],
+  "hooks": [
+    "./hooks/hooks.json"
+  ]
+}
