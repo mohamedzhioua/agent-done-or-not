@@ -52,6 +52,25 @@ Copy this repo's `AGENTS.md`. If your harness supports a stop/finish hook, wire
 
 ---
 
+## CI
+
+Use the GitHub composite action to gate a job on receipts created earlier in the
+same checkout:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: mohamedzhioua/agent-done-or-not@v0
+  with:
+    mode: assert
+    labels: "test build"
+    ttl: "3600"
+```
+
+Run `actions/checkout` first, then produce receipts earlier in the job with
+`bash done-gate.sh capture` before the action asserts them.
+
+---
+
 ## Use it
 
 ```bash

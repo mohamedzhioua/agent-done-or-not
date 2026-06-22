@@ -1,0 +1,40 @@
+name: Action self-test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  assert-success:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture self-test receipt
+        run: bash done-gate.sh capture --label selftest -- true
+
+      - name: Assert self-test receipt through local action
+        uses: ./
+        with:
+          mode: assert
+          labels: selftest
+
+  assert-failure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert without a receipt should fail
+        id: missing_receipt
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: assert
+          labels: selftest
+
+      - name: Confirm the missing-receipt assertion failed
+        run: |
+          if [ "${{ steps.missing_receipt.outcome }}" != "failure" ]; then
+            echo "Expected the action to fail without a receipt, got ${{ steps.missing_receipt.outcome }}"
+            exit 1
+          fi
