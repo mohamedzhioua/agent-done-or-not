@@ -77,6 +77,18 @@ npx skills add mohamedzhioua/agent-done-or-not
 Installs the proof-of-done rule as a skill for Claude Code / Codex / other
 agents.
 
+### npm / npx
+
+Run the gate without cloning — handy in a CI step or an npm script:
+
+```bash
+npx agent-done-or-not capture --label test -- npm test
+npx agent-done-or-not assert --label test --ttl 3600
+```
+
+Requires `bash` on PATH (Git Bash on Windows); the npm package is a thin wrapper
+over the same `done-gate.sh`. Publishing to npm is the maintainer's step.
+
 ### GitHub Action
 
 Use the composite action to gate a workflow job on receipts created earlier in

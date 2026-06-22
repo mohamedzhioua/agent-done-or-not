@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- npm package wrapper (`agent-done-or-not`) — run the gate via
+  `npx agent-done-or-not <capture|assert|verify|show> …` without cloning. A
+  zero-dependency Node shim forwards to the bundled `done-gate.sh`, preserves
+  the caller's cwd, and propagates the exit code. Requires `bash` on PATH.
+
 ## [0.4.0] — 2026-06-22
 
 Native packaging for the two agent-skill ecosystems — a Claude Code plugin and

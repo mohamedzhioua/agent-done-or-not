@@ -1,0 +1,42 @@
+{
+  "name": "agent-done-or-not",
+  "version": "0.4.0",
+  "description": "Proof-of-done gate that makes AI agents prove a task is done before claiming it.",
+  "bin": {
+    "agent-done-or-not": "bin/agent-done-or-not.js"
+  },
+  "files": [
+    "bin/",
+    "done-gate.sh",
+    "stop-gate.sh",
+    "proof.schema.json",
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".cursorrules",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "license": "MIT",
+  "author": "mohamedzhioua",
+  "homepage": "https://github.com/mohamedzhioua/agent-done-or-not#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mohamedzhioua/agent-done-or-not.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mohamedzhioua/agent-done-or-not/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "cursor",
+    "ai-agents",
+    "ci",
+    "verification",
+    "proof-of-done",
+    "hooks"
+  ]
+}
