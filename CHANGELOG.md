@@ -6,9 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-22
+
+Native packaging for the two agent-skill ecosystems — a Claude Code plugin and
+a skills.sh-installable Agent Skill — both thin wrappers over the canonical
+bash core.
+
 ### Added
 - Agent Skill package at `skills/done-or-not/SKILL.md` for installing the
-  proof-of-done rule with `npx skills add mohamedzhioua/agent-done-or-not`.
+  proof-of-done rule with `npx skills add mohamedzhioua/agent-done-or-not`, plus
+  the live skills.sh install-count badge.
 - Claude Code plugin wrapper manifest, Stop hook wiring, and marketplace catalog
   for installing hard proof-of-done enforcement without duplicating the bash
   core scripts.

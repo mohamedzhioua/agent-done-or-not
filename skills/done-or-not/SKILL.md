@@ -4,7 +4,7 @@ description: Proof-of-done gate — before claiming a task is complete, run the 
 license: MIT
 metadata:
   author: mohamedzhioua
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # done-or-not
