@@ -385,6 +385,29 @@ if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); pi='\n'.join(d['
   ok "scoop pre_install writes a .cmd launcher that calls the bundled engine"
 else bad "scoop pre_install launcher"; fi
 
+echo "== PowerShell port =="
+
+PS_GATE="$REPO/done-gate.ps1"
+PS_TESTS="$REPO/tests/run.ps1"
+
+# 51. the PowerShell engine and its parity tests exist.
+if [ -f "$PS_GATE" ] && [ -f "$PS_TESTS" ]; then
+  ok "done-gate.ps1 and tests/run.ps1 exist"
+else bad "PowerShell port files missing"; fi
+
+# 52. the PowerShell parity suite passes (guarded by a PowerShell host on PATH).
+PWSH=""
+for c in pwsh powershell pwsh.exe powershell.exe; do
+  command -v "$c" >/dev/null 2>&1 && { PWSH="$c"; break; }
+done
+if [ -n "$PWSH" ]; then
+  if "$PWSH" -NoProfile -File "$PS_TESTS" >/dev/null 2>&1; then
+    ok "PowerShell parity suite passes ($PWSH tests/run.ps1)"
+  else bad "PowerShell parity suite ($PWSH tests/run.ps1)"; fi
+else
+  ok "PowerShell parity suite skipped (no PowerShell host on PATH)"
+fi
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

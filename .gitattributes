@@ -10,3 +10,4 @@
 *.yaml text eol=lf
 *.js   text eol=lf
 *.rb   text eol=lf
+*.ps1  text eol=lf
