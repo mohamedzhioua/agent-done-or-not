@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-22
+
+Distribution: three drop-in ways to adopt the gate in any repo — a one-liner
+installer, a GitHub Action, and a pre-commit framework hook.
+
 ### Added
 - `.pre-commit-hooks.yaml` and `hooks/pre-commit-assert.sh` -- consume this repo
   as a pre-commit framework hook (`id: agent-done-assert`) to block commits
