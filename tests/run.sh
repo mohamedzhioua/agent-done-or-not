@@ -9,6 +9,10 @@ DONE_GATE="$REPO/done-gate.sh"
 STOP_GATE="$REPO/stop-gate.sh"
 INSTALLER="$REPO/install.sh"
 
+if ! python3 -c 'pass' >/dev/null 2>&1 && python -c 'pass' >/dev/null 2>&1; then
+  python3() { python "$@"; }
+fi
+
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
@@ -273,6 +277,20 @@ d="$(newsandbox)"
 # 35. E2E fail: wrapper exits non-zero when no receipt exists.
 d="$(newsandbox)"
 ( cd "$d" && bash "$REPO/hooks/pre-commit-assert.sh" >/dev/null 2>&1 )   && bad "pre-commit wrapper should exit non-zero with no receipt"   || ok "pre-commit wrapper exits non-zero with no receipt"
+
+echo "== claude plugin =="
+
+# 36. plugin manifest exists, is valid JSON, and declares name + version.
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d.get('name') == 'agent-done-or-not'; assert d.get('version')" "$REPO/.claude-plugin/plugin.json" >/dev/null 2>&1 \
+  && ok ".claude-plugin/plugin.json declares agent-done-or-not with a version" || bad ".claude-plugin/plugin.json"
+
+# 37. hooks config exists, is valid JSON, and wires Stop to the canonical stop-gate.
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); stop=d.get('hooks',{}).get('Stop'); assert isinstance(stop,list) and stop; cmds=[h.get('command','') for group in stop for h in group.get('hooks',[])]; assert any('\${CLAUDE_PLUGIN_ROOT}' in c and 'stop-gate.sh' in c for c in cmds)" "$REPO/hooks/hooks.json" >/dev/null 2>&1 \
+  && ok "hooks/hooks.json wires Stop through \${CLAUDE_PLUGIN_ROOT}/stop-gate.sh" || bad "hooks/hooks.json"
+
+# 38. marketplace catalog exists at .claude-plugin/, is valid JSON, and lists the plugin.
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); plugins=d.get('plugins',[]); assert any(p.get('name') == 'agent-done-or-not' for p in plugins)" "$REPO/.claude-plugin/marketplace.json" >/dev/null 2>&1 \
+  && ok ".claude-plugin/marketplace.json lists agent-done-or-not" || bad "marketplace.json"
 
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"

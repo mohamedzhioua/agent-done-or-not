@@ -38,6 +38,18 @@ Then drop the rule into your `CLAUDE.md` (copy the block from this repo's
 `CLAUDE.md`). Now Claude cannot end a turn claiming "done" until a fresh passing
 receipt exists.
 
+### Claude Code plugin
+
+```bash
+claude plugin marketplace add mohamedzhioua/agent-done-or-not
+claude plugin install agent-done-or-not
+```
+
+The plugin is a thin wrapper: the bash core stays canonical in this repo, and
+the plugin wires `stop-gate.sh` as the `Stop` hook for hard enforcement. You
+still drop the `CLAUDE.md` rule into the protected repo for the agent-facing
+instruction.
+
 ## Cursor
 
 Cursor has no hard stop hook, so the rule is the enforcement surface. Copy this
