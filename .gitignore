@@ -8,3 +8,6 @@ Thumbs.db
 
 # Internal handoff — never committed
 HANDOFF.md
+
+# npm auth — never commit a token-bearing .npmrc
+.npmrc
