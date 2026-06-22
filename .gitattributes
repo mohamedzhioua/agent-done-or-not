@@ -8,3 +8,4 @@
 .gitignore   text eol=lf
 .cursorrules text eol=lf
 *.yaml text eol=lf
+*.js   text eol=lf

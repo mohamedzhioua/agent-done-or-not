@@ -314,6 +314,45 @@ if grep -Fq 'done-gate.sh capture' "$SKILL" 2>/dev/null; then
   ok "skill body references done-gate.sh capture"
 else bad "skill capture instruction"; fi
 
+echo "== npm wrapper =="
+
+PKG="$REPO/package.json"
+BIN="$REPO/bin/agent-done-or-not.js"
+
+# 42. package.json is valid JSON with the expected name, version, and bin mapping.
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d.get('name')=='agent-done-or-not'; assert d.get('version'); assert d.get('bin',{}).get('agent-done-or-not')=='bin/agent-done-or-not.js'" "$PKG" >/dev/null 2>&1 \
+  && ok "package.json declares name, version, and bin mapping" || bad "package.json"
+
+# 43. the npm bin shim exists and is executable.
+if [ -x "$BIN" ]; then
+  ok "bin/agent-done-or-not.js exists and is executable"
+else bad "bin/agent-done-or-not.js not found or not executable"; fi
+
+# 44-46. end-to-end through the Node shim (guarded by node availability).
+if command -v node >/dev/null 2>&1; then
+  # 44. capture forwards args, preserves cwd, and records a receipt.
+  d="$(newsandbox)"
+  ( cd "$d" && node "$BIN" capture --label t -- true >/dev/null 2>&1 )
+  [ "$?" = "0" ] && [ -d "$d/.agent-proof" ] \
+    && ok "npx shim: capture exits 0 and writes a receipt in cwd" || bad "npm shim capture"
+
+  # 45. assert passes after a fresh capture through the shim.
+  d="$(newsandbox)"
+  ( cd "$d" && node "$BIN" capture --label t -- true >/dev/null 2>&1 \
+    && node "$BIN" assert --label t >/dev/null 2>&1 )
+  [ "$?" = "0" ] && ok "npx shim: assert exits 0 on a fresh receipt" || bad "npm shim assert pass"
+
+  # 46. assert fails (non-zero) with no receipt — exit code propagates.
+  d="$(newsandbox)"
+  ( cd "$d" && node "$BIN" assert --label t >/dev/null 2>&1 ) \
+    && bad "npm shim assert should fail with no receipt" \
+    || ok "npx shim: assert exits non-zero with no receipt (exit propagates)"
+else
+  ok "npx shim e2e skipped (no node on PATH)"
+  ok "npx shim e2e skipped (no node on PATH)"
+  ok "npx shim e2e skipped (no node on PATH)"
+fi
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
