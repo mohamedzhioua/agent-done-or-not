@@ -1,0 +1,33 @@
+{
+  "version": "0.5.0",
+  "description": "Proof-of-done gate that makes AI agents prove a task is done before claiming it.",
+  "homepage": "https://github.com/mohamedzhioua/agent-done-or-not",
+  "license": "MIT",
+  "url": "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.5.0.tar.gz",
+  "hash": "7d0292002748512757ffb8dab47765f9d8dc7572e4c8976e195db7e00f0b91f1",
+  "extract_dir": "agent-done-or-not-0.5.0",
+  "pre_install": [
+    "# The engine is bash; ship a .cmd launcher that forwards to the bundled",
+    "# done-gate.sh via bash (Git for Windows). %~dp0 resolves to this app dir,",
+    "# and cwd is preserved so .agent-proof\\ lands in the caller's repo.",
+    "Set-Content -Path \"$dir\\agent-done-or-not.cmd\" -Encoding Ascii -Value @(",
+    "  '@echo off',",
+    "  'bash \"%~dp0done-gate.sh\" %*'",
+    ")"
+  ],
+  "bin": "agent-done-or-not.cmd",
+  "suggest": {
+    "bash (provided by Git for Windows)": "git"
+  },
+  "notes": [
+    "agent-done-or-not runs on bash. If 'bash' is not on PATH, install Git for",
+    "Windows (scoop install git) or use Git Bash.",
+    "To enforce proof-of-done in Claude Code, wire the Stop hook in",
+    ".claude/settings.json to: bash \"<scoop>\\apps\\agent-done-or-not\\current\\stop-gate.sh\""
+  ],
+  "checkver": "github",
+  "autoupdate": {
+    "url": "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v$version.tar.gz",
+    "extract_dir": "agent-done-or-not-$version"
+  }
+}

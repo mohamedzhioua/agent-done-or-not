@@ -9,3 +9,4 @@
 .cursorrules text eol=lf
 *.yaml text eol=lf
 *.js   text eol=lf
+*.rb   text eol=lf
