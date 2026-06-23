@@ -198,7 +198,7 @@ function Capture-Command {
         # The pipeline tees combined stdout/stderr to the console and UTF-8 log.
         & $cmd @cmdArgs 2>&1 | ForEach-Object {
             $line = [string]$_
-            Write-Output $line
+            [Console]::Out.WriteLine($line)
             $writer.WriteLine($line)
         }
         $rc = $LASTEXITCODE

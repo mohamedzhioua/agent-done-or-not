@@ -11,7 +11,7 @@
 class AgentDoneOrNot < Formula
   desc "Proof-of-done gate that makes AI agents prove a task is done before claiming it"
   homepage "https://github.com/mohamedzhioua/agent-done-or-not"
-  url "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.6.0.tar.gz"
+  url "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.7.0.tar.gz"
   sha256 "1d969443dbbb37926f035b80e7988925c8ed04f93c2cce16dbb82d4649e81ce4"
   license "MIT"
 

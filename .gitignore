@@ -11,3 +11,6 @@ HANDOFF.md
 
 # npm auth — never commit a token-bearing .npmrc
 .npmrc
+
+# codex-rescue runtime artifacts
+.ai-os/
