@@ -2,7 +2,7 @@
 
 [![Works with Claude Code · Cursor · Codex](https://img.shields.io/badge/works_with-Claude_Code_·_Cursor_·_Codex-black?style=for-the-badge&logo=anthropic&logoColor=white)](#install-60-seconds)
 [![GitHub stars](https://img.shields.io/github/stars/mohamedzhioua/agent-done-or-not?style=for-the-badge&logo=github&color=black)](https://github.com/mohamedzhioua/agent-done-or-not/stargazers)
-[![skills.sh](https://skills.sh/b/mohamedzhioua/agent-done-or-not)](https://skills.sh/mohamedzhioua/agent-done-or-not)
+[![Agent Skill](https://img.shields.io/badge/agent_skill-done--or--not-black?style=for-the-badge)](https://skills.sh/mohamedzhioua/agent-done-or-not)
 
 [![CI](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml/badge.svg)](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml)
 [![npm](https://img.shields.io/npm/v/agent-done-or-not?logo=npm)](https://www.npmjs.com/package/agent-done-or-not)
@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Your AI agent just said "Done ✅" — but did it verify?** This one-file gate
-forces it to *prove* the claim with a hash before it can declare success. Works
+forces it to record fresh evidence before it can declare success. Works
 with **Claude Code, Cursor, and Codex**. Copy. Paste. Ship.
 
 ```text
@@ -58,10 +58,11 @@ with the command's own code, **a failing check can't be dressed up as success.**
 From the repo you want to protect:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/install.sh | sh
+npx agent-done-or-not init --yes
 ```
 
-Prefer to inspect first? Use the manual two-file install in **[examples/install.md](examples/install.md)**.
+Prefer to inspect first? Use `npx agent-done-or-not init --dry-run`, or use the
+manual two-file install in **[examples/install.md](examples/install.md)**.
 
 Then wire the rule + hook for your tool — see **[examples/install.md](examples/install.md)**.
 
@@ -76,11 +77,15 @@ npx skills add mohamedzhioua/agent-done-or-not
 ```
 
 Installs the proof-of-done rule as a skill for Claude Code / Codex / other
-agents.
+agents. A skill-only install gives the agent instructions, not repo-root gate
+scripts; use `npx agent-done-or-not capture ...` from the skill, or run
+`agent-done-or-not init` / the installer first to add local `done-gate.*`
+scripts and hook config.
 
 ### npm / npx
 
-Run the gate without cloning — handy in a CI step or an npm script:
+Run the gate without cloning — handy in a CI step, an npm script, or a
+skill-only install:
 
 ```bash
 npx agent-done-or-not capture --label test -- npm test
@@ -89,6 +94,12 @@ npx agent-done-or-not assert --label test --ttl 3600
 
 The npm wrapper uses the bundled Bash engine when Bash is available, and falls
 back to the bundled PowerShell engine on Windows.
+
+Fast local smoke check for the npm wrapper:
+
+```bash
+npm run smoke
+```
 
 ### Homebrew / Scoop
 
@@ -112,7 +123,7 @@ The pinned formula and manifest live in [`packaging/`](packaging/); see
 
 `done-gate.ps1` is a native port of the engine with identical behavior and an
 identical receipt format. It runs on Windows PowerShell 5.1 and PowerShell 7+
-with built-ins only — no Git Bash required:
+with built-ins only — no bash required:
 
 ```powershell
 pwsh done-gate.ps1 capture --label test -- your-test-command
@@ -159,6 +170,9 @@ bash done-gate.sh capture --label test -- npm test
 
 # Inspect the receipts:
 bash done-gate.sh show
+
+# Render a compact proof summary:
+npx agent-done-or-not report --format markdown
 ```
 
 ```json
@@ -174,7 +188,7 @@ Add this to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/mohamedzhioua/agent-done-or-not
-    rev: v0.2.0
+    rev: v0.7.0
     hooks:
       - id: agent-done-assert
 ```
@@ -272,7 +286,7 @@ export AGENT_DONE_OFF=1   # disable the gate
 `sha256sum` / `shasum` / `python` for hashing.
 
 **Windows?** Fully supported natively. `done-gate.ps1` and `stop-gate.ps1`
-are native PowerShell ports (PS 5.1 + PS 7+, no Git Bash required). Receipts
+are native PowerShell ports (PS 5.1 + PS 7+, no bash required). Receipts
 are interchangeable between the bash and PowerShell engines.
 
 **Won't it get my agent stuck?** No — after `AGENT_DONE_MAX_RETRIES` consecutive

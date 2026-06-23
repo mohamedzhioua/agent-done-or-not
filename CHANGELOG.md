@@ -6,6 +6,51 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-06-23
+
+Adds a 60-second onboarding flow and an inspectable proof report, plus a
+GitHub Action job summary — closing the gap between "the gate runs" and
+"I can see the evidence."
+
+### Added
+- `agent-done-or-not init` — bootstraps proof-of-done in a repo. Detects the
+  stack (npm/pnpm/yarn, Python, Go, Cargo, Maven/Gradle) and infers
+  conservative `test`/`build`/`lint` labels only when the corresponding scripts
+  or tools are present, falling back to a manual `check` label otherwise. Writes
+  a managed, marker-delimited proof block into existing agent instruction files
+  (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`),
+  preserving unrelated content and backing up any file it changes. `--dry-run`
+  previews without writing; `--label`/`--command` override detection;
+  `--claude-hook` also writes a Claude Code Stop hook into `.claude/settings.json`.
+- `agent-done-or-not report --format markdown|html|json` — renders a compact
+  proof summary from `.agent-proof` ledgers, with an explicit non-green state
+  vocabulary (`missing`, `failed`, `stale`, `bypassed`, `local-only`), commit
+  SHA, and dirty-tree status. Bypassed/stale/missing/failed states are never
+  presented as verified.
+- GitHub Action now writes a proof job summary to `$GITHUB_STEP_SUMMARY`
+  (mode, labels, status, and HTML-escaped gate output) without changing the
+  assert exit status.
+- `npm run smoke` — a fast wrapper sanity check.
+
+### Changed
+- npm/skill docs now lead with `npx agent-done-or-not init` / `capture`, clarify
+  the PowerShell fallback on Windows, and explain that a skill-only install
+  provides instructions rather than repo-root gate scripts.
+- Messaging tightened from "cryptographically proves correctness" to "records
+  fresh evidence that configured checks ran."
+
+### Fixed
+- `report` now escapes agent-controlled receipt fields before rendering
+  (markdown table cells and HTML), and `--format html` emits a real HTML table
+  instead of an escaped raw-markdown dump.
+- `init` preserves separation between the managed block and following content on
+  re-runs, and never overwrites an existing backup file.
+- GitHub Action job summary writes gate output into an HTML-escaped `<pre>`
+  block so receipt/command text cannot inject markdown into the summary.
+- `done-gate.ps1` writes captured output straight to the console
+  (`[Console]::Out.WriteLine`) so it cannot leak into the function's return
+  value.
+
 ## [0.6.0] — 2026-06-22
 
 Completes Windows-native support and broadens agent coverage to every major

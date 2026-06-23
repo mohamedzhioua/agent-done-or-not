@@ -3,6 +3,12 @@
 From the repo you want to protect:
 
 ```bash
+npx agent-done-or-not init --yes
+```
+
+Prefer a shell-only install?
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/mohamedzhioua/agent-done-or-not/main/install.sh | sh
 ```
 
@@ -57,7 +63,15 @@ npx skills add mohamedzhioua/agent-done-or-not
 ```
 
 Installs the proof-of-done rule as a skill for Claude Code / Codex / other
-agents.
+agents. A skill-only install does not copy repo-root `done-gate.*` scripts, so
+use the portable command from the skill:
+
+```bash
+npx agent-done-or-not capture --label check -- <your verifying command>
+```
+
+Run `agent-done-or-not init` or the shell installer when you want local
+`done-gate.*` scripts and hook config in the protected repo.
 
 ### npm / npx
 
@@ -66,8 +80,9 @@ npx agent-done-or-not capture --label test -- npm test
 npx agent-done-or-not assert --label test --ttl 3600
 ```
 
-Runs the gate without cloning (a thin wrapper over `done-gate.sh`). Requires
-`bash` on PATH — Git Bash on Windows.
+Runs the gate without cloning. The wrapper uses `done-gate.sh` when Bash is
+available and falls back to `done-gate.ps1` through `pwsh` / `powershell` on
+Windows.
 
 ## Cursor
 
@@ -107,7 +122,7 @@ Add to `.pre-commit-config.yaml` in any repo that uses this tool:
 ```yaml
 repos:
   - repo: https://github.com/mohamedzhioua/agent-done-or-not
-    rev: v0.2.0
+    rev: v0.7.0
     hooks:
       - id: agent-done-assert
 ```

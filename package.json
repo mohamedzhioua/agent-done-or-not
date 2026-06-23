@@ -1,9 +1,12 @@
 {
   "name": "agent-done-or-not",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Proof-of-done gate that makes AI agents prove a task is done before claiming it.",
   "bin": {
     "agent-done-or-not": "bin/agent-done-or-not.js"
+  },
+  "scripts": {
+    "smoke": "node bin/agent-done-or-not.js --help"
   },
   "files": [
     "bin/",

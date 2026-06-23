@@ -1,8 +1,8 @@
 ---
 name: done-or-not
 description: >
-  Proof-of-done enforcement gate — cryptographically proves a task is actually
-  complete before any agent can claim "done". Runs your verifying command
+  Proof-of-done enforcement gate — records fresh evidence before any agent can
+  claim "done". Runs your verifying command
   (tests, build, lint, curl) through a tamper-evident gate that records the
   command, exit code, and SHA-256 of the output. Blocks completion on any
   failing, stale, or already-consumed receipt. Works with Claude Code (hard
@@ -41,10 +41,10 @@ metadata:
 ## Why this exists
 
 AI agents routinely announce tasks are complete without verifying anything
-actually ran. This skill enforces a **cryptographic proof gate**: the agent
-must run the real check (tests, build, typecheck, lint, a `curl` against the
-endpoint — whatever demonstrates correctness), record a tamper-evident
-receipt, and only then may it report done.
+actually ran. This skill enforces a **proof gate**: the agent must run the real
+check (tests, build, typecheck, lint, a `curl` against the endpoint — whatever
+demonstrates the claim), record a tamper-evident receipt, and only then may it
+report done.
 
 The gate records: the command, its exit code, and a SHA-256 of its full
 output. Freshness is judged by the epoch *inside* the receipt (not file mtime,
@@ -59,16 +59,25 @@ not confidence or memory.
 
 ## How to use
 
-### Linux / macOS / Git Bash
+### Portable skill command
 
-1. Identify the command that proves the work. Choose the smallest check that
+1. Identify the command that verifies the work. Choose the smallest check that
    actually verifies the claim: tests, build, typecheck, lint, a `curl` against
    a running endpoint, or another command with meaningful pass/fail behavior.
 
-2. Run the verifying command through the proof gate:
+2. Run the verifying command through the proof gate. This works even when this
+   skill was installed without the repo-root gate scripts:
+
+   ```bash
+   npx agent-done-or-not capture --label check -- <your verifying command>
+   ```
+
+   If the protected repo was initialized with local scripts, these faster local
+   forms are also valid:
 
    ```bash
    bash done-gate.sh capture --label check -- <your verifying command>
+   pwsh -File done-gate.ps1 capture --label check -- <your verifying command>
    ```
 
    The gate records the command, its exit code, and a SHA-256 of the output.
@@ -79,9 +88,10 @@ not confidence or memory.
 4. If the check fails, fix the problem and capture again. Never report success
    on a red check.
 
-### Windows (native PowerShell — no Git Bash required)
+### Windows (native PowerShell — no bash required)
 
 ```powershell
+npx agent-done-or-not capture --label check -- <your verifying command>
 pwsh -File done-gate.ps1 capture --label check -- <your verifying command>
 # or, on Windows PowerShell 5.1:
 powershell -NoProfile -File done-gate.ps1 capture --label check -- <your verifying command>

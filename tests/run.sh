@@ -248,7 +248,14 @@ if grep -q 'GITHUB_ACTION_PATH/done-gate.sh' "$REPO/action.yml" \
   ok "action.yml builds assert arguments without empty optional flags"
 else bad "action.yml argument construction"; fi
 
-# 31. the self-test workflow dogfoods success and expected-failure paths.
+# 31. action.yml writes a GitHub job summary without changing the assert status.
+if grep -Fq 'GITHUB_STEP_SUMMARY' "$REPO/action.yml" \
+   && grep -Fq 'agent-done-or-not proof summary' "$REPO/action.yml" \
+   && grep -Fq 'exit "$status"' "$REPO/action.yml"; then
+  ok "action.yml appends a proof job summary"
+else bad "action.yml job summary"; fi
+
+# 32. the self-test workflow dogfoods success and expected-failure paths.
 if [ -f "$REPO/.github/workflows/action-selftest.yml" ] \
    && grep -q 'actions/checkout@v4' "$REPO/.github/workflows/action-selftest.yml" \
    && grep -q 'uses: ./' "$REPO/.github/workflows/action-selftest.yml" \
@@ -260,35 +267,35 @@ else bad "action self-test workflow structure"; fi
 
 echo "== pre-commit hook =="
 
-# 32. .pre-commit-hooks.yaml exists and declares the expected hook fields.
+# 33. .pre-commit-hooks.yaml exists and declares the expected hook fields.
 if [ -f "$REPO/.pre-commit-hooks.yaml" ]    && grep -q 'id: agent-done-assert' "$REPO/.pre-commit-hooks.yaml"    && grep -q 'pass_filenames: false' "$REPO/.pre-commit-hooks.yaml"    && grep -q 'entry: hooks/pre-commit-assert.sh' "$REPO/.pre-commit-hooks.yaml"; then
   ok ".pre-commit-hooks.yaml declares agent-done-assert hook"
 else bad ".pre-commit-hooks.yaml missing or malformed"; fi
 
-# 33. hooks/pre-commit-assert.sh exists and is executable.
+# 34. hooks/pre-commit-assert.sh exists and is executable.
 if [ -x "$REPO/hooks/pre-commit-assert.sh" ]; then
   ok "hooks/pre-commit-assert.sh exists and is executable"
 else bad "hooks/pre-commit-assert.sh not found or not executable"; fi
 
-# 34. E2E pass: wrapper exits 0 when a fresh receipt exists in the sandbox cwd.
+# 35. E2E pass: wrapper exits 0 when a fresh receipt exists in the sandbox cwd.
 d="$(newsandbox)"
 ( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1   && bash "$REPO/hooks/pre-commit-assert.sh" --ttl 3600 >/dev/null 2>&1 )   && ok "pre-commit wrapper exits 0 with a fresh receipt"   || bad "pre-commit wrapper exit 0 path"
 
-# 35. E2E fail: wrapper exits non-zero when no receipt exists.
+# 36. E2E fail: wrapper exits non-zero when no receipt exists.
 d="$(newsandbox)"
 ( cd "$d" && bash "$REPO/hooks/pre-commit-assert.sh" >/dev/null 2>&1 )   && bad "pre-commit wrapper should exit non-zero with no receipt"   || ok "pre-commit wrapper exits non-zero with no receipt"
 
 echo "== claude plugin =="
 
-# 36. plugin manifest exists, is valid JSON, and declares name + version.
+# 37. plugin manifest exists, is valid JSON, and declares name + version.
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d.get('name') == 'agent-done-or-not'; assert d.get('version')" "$REPO/.claude-plugin/plugin.json" >/dev/null 2>&1 \
   && ok ".claude-plugin/plugin.json declares agent-done-or-not with a version" || bad ".claude-plugin/plugin.json"
 
-# 37. hooks config exists, is valid JSON, and wires Stop to the canonical stop-gate.
+# 38. hooks config exists, is valid JSON, and wires Stop to the canonical stop-gate.
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); stop=d.get('hooks',{}).get('Stop'); assert isinstance(stop,list) and stop; cmds=[h.get('command','') for group in stop for h in group.get('hooks',[])]; assert any('\${CLAUDE_PLUGIN_ROOT}' in c and 'stop-gate.sh' in c for c in cmds)" "$REPO/hooks/hooks.json" >/dev/null 2>&1 \
   && ok "hooks/hooks.json wires Stop through \${CLAUDE_PLUGIN_ROOT}/stop-gate.sh" || bad "hooks/hooks.json"
 
-# 38. marketplace catalog exists at .claude-plugin/, is valid JSON, and lists the plugin.
+# 39. marketplace catalog exists at .claude-plugin/, is valid JSON, and lists the plugin.
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); plugins=d.get('plugins',[]); assert any(p.get('name') == 'agent-done-or-not' for p in plugins)" "$REPO/.claude-plugin/marketplace.json" >/dev/null 2>&1 \
   && ok ".claude-plugin/marketplace.json lists agent-done-or-not" || bad "marketplace.json"
 
@@ -296,12 +303,12 @@ echo "== agent skill =="
 
 SKILL="$REPO/skills/done-or-not/SKILL.md"
 
-# 39. skill package exists at the nested skills.sh-compatible path.
+# 40. skill package exists at the nested skills.sh-compatible path.
 if [ -f "$SKILL" ]; then
   ok "skills/done-or-not/SKILL.md exists"
 else bad "skills/done-or-not/SKILL.md missing"; fi
 
-# 40. skill frontmatter declares the required name and description.
+# 41. skill frontmatter declares the required name and description.
 if [ "$(sed -n '1p' "$SKILL" 2>/dev/null)" = "---" ] \
    && [ "$(sed -n '2,/^---$/p' "$SKILL" 2>/dev/null | grep -c '^---$')" = "1" ] \
    && sed -n '2,/^---$/p' "$SKILL" 2>/dev/null | grep -q '^name:[[:space:]]*done-or-not[[:space:]]*$' \
@@ -309,9 +316,10 @@ if [ "$(sed -n '1p' "$SKILL" 2>/dev/null)" = "---" ] \
   ok "skill frontmatter declares name and non-empty description"
 else bad "skill frontmatter"; fi
 
-# 41. skill body points agents at the proof capture command.
-if grep -Fq 'done-gate.sh capture' "$SKILL" 2>/dev/null; then
-  ok "skill body references done-gate.sh capture"
+# 42. skill body points standalone installs at the portable proof capture command.
+if grep -Fq 'npx agent-done-or-not capture' "$SKILL" 2>/dev/null \
+   && grep -Fq 'done-gate.sh capture' "$SKILL" 2>/dev/null; then
+  ok "skill body references npx capture with local script fallback"
 else bad "skill capture instruction"; fi
 
 echo "== npm wrapper =="
@@ -347,10 +355,78 @@ if command -v node >/dev/null 2>&1; then
   ( cd "$d" && node "$BIN" assert --label t >/dev/null 2>&1 ) \
     && bad "npm shim assert should fail with no receipt" \
     || ok "npx shim: assert exits non-zero with no receipt (exit propagates)"
+
+  # 47. help/smoke command exits 0.
+  ( cd "$REPO" && node "$BIN" --help >/dev/null 2>&1 ) \
+    && ok "npm shim: --help exits 0" || bad "npm shim --help"
+
+  # 48. init detects npm test script and writes a managed proof block.
+  d="$(newsandbox)"
+  printf '{"scripts":{"test":"true"}}\n' > "$d/package.json"
+  ( cd "$d" && node "$BIN" init --yes >/dev/null 2>&1 )
+  if grep -Fq 'npx agent-done-or-not capture --label test -- npm run test' "$d/AGENTS.md" 2>/dev/null; then
+    ok "init writes npm test proof guidance"
+  else bad "init npm test guidance"; fi
+
+  # 49. init preserves existing instructions and creates a backup.
+  d="$(newsandbox)"
+  printf 'keep this\n' > "$d/AGENTS.md"
+  ( cd "$d" && node "$BIN" init --yes --label check --command "true" >/dev/null 2>&1 )
+  if grep -Fq 'keep this' "$d/AGENTS.md" 2>/dev/null \
+     && ls "$d"/AGENTS.md.agent-done-or-not.bak-* >/dev/null 2>&1; then
+    ok "init preserves existing AGENTS.md with backup"
+  else bad "init existing instruction preservation"; fi
+
+  # 50. init dry-run does not write.
+  d="$(newsandbox)"
+  ( cd "$d" && node "$BIN" init --dry-run >/dev/null 2>&1 )
+  [ ! -f "$d/AGENTS.md" ] && ok "init --dry-run writes nothing" || bad "init dry-run"
+
+  # 51. report emits a non-green missing state when no receipt exists.
+  d="$(newsandbox)"
+  out="$( cd "$d" && node "$BIN" report --format json 2>/dev/null )"
+  printf '%s' "$out" | python -c "import sys,json; assert json.load(sys.stdin)['state']=='missing'" >/dev/null 2>&1 \
+    && ok "report --format json shows missing state" || bad "report json missing"
+
+  # 52. skill-only simulation: no local gate scripts, but the package bin captures proof.
+  d="$(newsandbox)"
+  ( cd "$d" && node "$BIN" capture --label t -- true >/dev/null 2>&1 )
+  [ "$?" = "0" ] && [ -d "$d/.agent-proof" ] && [ ! -f "$d/done-gate.sh" ] \
+    && ok "skill-only simulation captures through package bin without local scripts" \
+    || bad "skill-only package-bin capture"
+
+  # 53. report --format html renders a real HTML table and escapes receipt content.
+  d="$(newsandbox)"
+  ( cd "$d" && bash "$DONE_GATE" capture --label safe -- echo '<s>' >/dev/null 2>&1 )
+  out="$( cd "$d" && node "$BIN" report --format html 2>/dev/null )"
+  if printf '%s' "$out" | grep -Fq '<table>' && printf '%s' "$out" | grep -Fq '<td>safe</td>' \
+     && printf '%s' "$out" | grep -Fq '&lt;s&gt;' && ! printf '%s' "$out" | grep -Fq '<td>echo <s>'; then
+    ok "report --format html renders an escaped HTML table"
+  else bad "report html table render"; fi
+
+  # 54. init is idempotent: a second run keeps one managed block and preserves the trailing line.
+  d="$(newsandbox)"
+  printf 'top line\n' > "$d/AGENTS.md"
+  printf '\n\nbottom line\n' >> "$d/AGENTS.md"
+  ( cd "$d" && node "$BIN" init --yes --label check --command "true" >/dev/null 2>&1 )
+  ( cd "$d" && node "$BIN" init --yes --label check --command "true" >/dev/null 2>&1 )
+  blocks="$(grep -Fc 'agent-done-or-not:start' "$d/AGENTS.md" 2>/dev/null)"
+  if [ "$blocks" = "1" ] && grep -Fq 'bottom line' "$d/AGENTS.md" 2>/dev/null \
+     && ! grep -Fq 'agent-done-or-not:end -->bottom' "$d/AGENTS.md" 2>/dev/null; then
+    ok "init is idempotent and preserves trailing content separation"
+  else bad "init idempotency / separation"; fi
 else
   ok "npx shim e2e skipped (no node on PATH)"
   ok "npx shim e2e skipped (no node on PATH)"
   ok "npx shim e2e skipped (no node on PATH)"
+  ok "npm shim help skipped (no node on PATH)"
+  ok "init npm test skipped (no node on PATH)"
+  ok "init backup skipped (no node on PATH)"
+  ok "init dry-run skipped (no node on PATH)"
+  ok "report json skipped (no node on PATH)"
+  ok "skill-only simulation skipped (no node on PATH)"
+  ok "report html skipped (no node on PATH)"
+  ok "init idempotency skipped (no node on PATH)"
 fi
 
 echo "== packaging (Homebrew + Scoop) =="

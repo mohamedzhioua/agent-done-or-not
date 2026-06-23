@@ -70,4 +70,26 @@ runs:
           args+=(--json)
         fi
 
-        bash "$GITHUB_ACTION_PATH/done-gate.sh" "${args[@]}"
+        set +e
+        output="$(bash "$GITHUB_ACTION_PATH/done-gate.sh" "${args[@]}" 2>&1)"
+        status=$?
+        set -e
+
+        printf '%s\n' "$output"
+
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          {
+            printf '## agent-done-or-not proof summary\n\n'
+            printf '- mode: `%s`\n' "$INPUT_MODE"
+            printf '- labels: `%s`\n' "${INPUT_LABELS:-latest}"
+            printf '- status: `%s`\n\n' "$status"
+            # HTML-escape gate output into a <pre> block: receipt/command text is
+            # agent-controlled, so a raw ```fence``` could be broken out of and
+            # inject markdown into the job summary.
+            printf '<pre>\n'
+            printf '%s\n' "$output" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+            printf '</pre>\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        exit "$status"

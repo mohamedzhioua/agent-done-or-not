@@ -158,6 +158,19 @@ if ($receipt.sha256 -match '^[0-9a-f]{64}$' -and $receipt.exit_code -eq 0 -and (
 }
 
 $d = New-Sandbox
+$r = Invoke-Gate $d @('capture', '--label', 't', '--', 'pwsh', '-NoProfile', '-Command', 'Write-Output "hello"; exit 0')
+try {
+    $receipt = Latest-Receipt $r.ProofDir
+    if ($r.ExitCode -eq 0 -and $receipt.exit_code -eq 0 -and $r.Stdout -match 'hello') {
+        Ok 'capture keeps output separate from numeric exit_code'
+    } else {
+        Bad 'capture output exit_code'
+    }
+} catch {
+    Bad 'capture output ledger parse'
+}
+
+$d = New-Sandbox
 $r = Invoke-Gate $d (@('capture', '--label', 't', '--') + (PassingCommand))
 $sha = (Latest-Receipt $r.ProofDir).sha256
 $v = Invoke-Gate $d @('verify', '--label', 't', '--sha', $sha) $r.ProofDir
