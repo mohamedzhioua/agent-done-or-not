@@ -11,14 +11,14 @@
 class AgentDoneOrNot < Formula
   desc "Proof-of-done gate that makes AI agents prove a task is done before claiming it"
   homepage "https://github.com/mohamedzhioua/agent-done-or-not"
-  url "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.7.0.tar.gz"
-  sha256 "defb78a58e7179d9af265cd7a8955cc7fe4c04a45f716c5d7fe4d99933772a18"
+  url "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.8.0.tar.gz"
+  sha256 "25bf2050be0209007197f09260ebbda06a99c95e3afe490885095f5c0f4745ca"
   license "MIT"
 
   depends_on "bash"
 
   def install
-    libexec.install "done-gate.sh", "stop-gate.sh", "proof.schema.json"
+    libexec.install "done-gate.sh", "stop-gate.sh", "proof.schema.json", "policy.schema.json"
 
     bash = Formula["bash"].opt_bin/"bash"
 
