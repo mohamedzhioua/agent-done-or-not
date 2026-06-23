@@ -80,9 +80,9 @@ runs:
         if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
           {
             printf '## agent-done-or-not proof summary\n\n'
-            printf '- mode: `%s`\n' "$INPUT_MODE"
-            printf '- labels: `%s`\n' "${INPUT_LABELS:-latest}"
-            printf '- status: `%s`\n\n' "$status"
+            printf -- '- mode: `%s`\n' "$INPUT_MODE"
+            printf -- '- labels: `%s`\n' "${INPUT_LABELS:-latest}"
+            printf -- '- status: `%s`\n\n' "$status"
             # HTML-escape gate output into a <pre> block: receipt/command text is
             # agent-controlled, so a raw ```fence``` could be broken out of and
             # inject markdown into the job summary.

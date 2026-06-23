@@ -255,6 +255,32 @@ if grep -Fq 'GITHUB_STEP_SUMMARY' "$REPO/action.yml" \
   ok "action.yml appends a proof job summary"
 else bad "action.yml job summary"; fi
 
+# 31b. the job-summary printf lines must run cleanly under `set -e`. A format
+# string starting with `-` is parsed as a printf option and aborts the step
+# (regression caught only in CI before). Execute the exact summary block here.
+summary_file="$(mktemp)"
+status=0
+(
+  set -e
+  INPUT_MODE=assert
+  INPUT_LABELS=selftest
+  output='done-gate: assert OK   label=selftest exit=0 fresh=true'
+  {
+    printf '## agent-done-or-not proof summary\n\n'
+    printf -- '- mode: `%s`\n' "$INPUT_MODE"
+    printf -- '- labels: `%s`\n' "${INPUT_LABELS:-latest}"
+    printf -- '- status: `%s`\n\n' "0"
+    printf '<pre>\n'
+    printf '%s\n' "$output" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+    printf '</pre>\n'
+  } > "$summary_file"
+) || status=$?
+if [ "$status" = "0" ] && grep -Fq -e '- mode: `assert`' "$summary_file" \
+   && ! grep -Fq "printf '-" "$REPO/action.yml"; then
+  ok "action.yml job-summary printf block runs under set -e"
+else bad "action.yml job-summary printf block (leading-dash printf?)"; fi
+rm -f "$summary_file"
+
 # 32. the self-test workflow dogfoods success and expected-failure paths.
 if [ -f "$REPO/.github/workflows/action-selftest.yml" ] \
    && grep -q 'actions/checkout@v4' "$REPO/.github/workflows/action-selftest.yml" \
