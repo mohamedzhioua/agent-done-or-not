@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/agent-done-or-not/policy.schema.json",
+  "title": "Policy file",
+  "description": "Maintainer-authored file (agent-done.json) that defines what a passing 'done' requires. Located at <repo-root>/agent-done.json (git rev-parse --show-toplevel, fallback: cwd). Overridable with AGENT_DONE_POLICY env var or --policy CLI flag.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL of this schema."
+    },
+    "required": {
+      "type": "array",
+      "description": "Ordered list of checks that must each have a fresh passing receipt before the gate passes.",
+      "items": {
+        "type": "object",
+        "description": "A single required check. Each object MUST be flat (no nested braces) to allow dependency-free line-oriented parsing across all engines.",
+        "required": ["label"],
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Name of the required receipt label, e.g. \"test\" or \"build\"."
+          },
+          "command_regex": {
+            "type": "string",
+            "description": "Optional ECMAScript / POSIX ERE pattern matched against the receipt's command field. When absent, any command is accepted. MUST NOT contain a literal double-quote character (\") — use alternation or character classes instead. This constraint enables dependency-free parsing with a simple regex across all engines."
+          }
+        }
+      }
+    },
+    "ttl": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Maximum age in seconds for a receipt to be considered fresh. Omit to use the engine default (AGENT_DONE_TTL env var, or 3600). A value of 0 disables the freshness check."
+    }
+  }
+}

@@ -504,6 +504,113 @@ else
   ok "PowerShell parity suite skipped (no PowerShell host on PATH)"
 fi
 
+echo "== policy + labels =="
+
+# P1. policy: all required labels passing across SEPARATE runs -> assert passes.
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "test" }, { "label": "build" } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  sleep 1
+  bash "$DONE_GATE" capture --label build -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert >/dev/null 2>&1 )
+[ "$?" = "0" ] && ok "policy: all required labels (cross-run) pass" || bad "policy cross-run pass"
+
+# P2. policy: a required label missing -> assert fails.
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "test" }, { "label": "build" } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert >/dev/null 2>&1 )
+[ "$?" = "1" ] && ok "policy: missing required label fails" || bad "policy missing label"
+
+# P3. policy: per-label command_regex enforced (match passes, mismatch fails).
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "test", "command_regex": "^true$" } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert >/dev/null 2>&1 )
+ok_match=$?
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "test", "command_regex": "npm test" } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert >/dev/null 2>&1 )
+bad_match=$?
+[ "$ok_match" = "0" ] && [ "$bad_match" = "1" ] \
+  && ok "policy: per-label command_regex enforced" || bad "policy per-label regex ($ok_match/$bad_match)"
+
+# P4. policy: ttl from the policy file is honored (stale receipt fails).
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "test" } ], "ttl": 1 }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1 )
+sleep 2
+( cd "$d" && bash "$DONE_GATE" assert >/dev/null 2>&1 )
+[ "$?" = "1" ] && ok "policy: ttl from policy file rejects a stale receipt" || bad "policy ttl"
+
+# P5. --no-policy falls back to legacy latest behavior even with a policy present.
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "build" } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert --no-policy >/dev/null 2>&1 )
+[ "$?" = "0" ] && ok "--no-policy uses legacy latest receipt" || bad "--no-policy fallback"
+
+# P6. explicit --label still overrides the policy (legacy path intact).
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "build" } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert --label test >/dev/null 2>&1 )
+[ "$?" = "0" ] && ok "explicit --label overrides policy" || bad "explicit label override"
+
+# P7. assert --json carries the policy key (set in policy mode, empty in legacy).
+d="$(newsandbox)"
+out_pol="$( cd "$d" && printf '{ "required": [ { "label": "test" } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert --json 2>/dev/null )"
+out_leg="$( cd "$d" && bash "$DONE_GATE" assert --json --label test 2>/dev/null )"
+if printf '%s' "$out_pol" | python -c "import sys,json; d=json.load(sys.stdin); assert d['policy']=='agent-done.json' and d['ok'] is True" >/dev/null 2>&1 \
+   && printf '%s' "$out_leg" | python -c "import sys,json; d=json.load(sys.stdin); assert d['policy']=='' " >/dev/null 2>&1; then
+  ok "assert --json includes the policy key"
+else bad "assert --json policy key"; fi
+
+# P8. weak-only (lint) check warns but still exits 0 (advisory, never blocks).
+d="$(newsandbox)"
+err="$( cd "$d" && bash "$DONE_GATE" capture --label lint -- true >/dev/null 2>&1
+        bash "$DONE_GATE" assert --label lint 2>&1 >/dev/null )"
+rc_warn="$( cd "$d" && bash "$DONE_GATE" assert --label lint >/dev/null 2>&1; printf '%s' "$?" )"
+if [ "$rc_warn" = "0" ] && printf '%s' "$err" | grep -Fq 'WARNING — latest proof is lint-only'; then
+  ok "weak-only check warns but exits 0"
+else bad "weak-only warning (rc=$rc_warn)"; fi
+
+# P9. SECURITY: a policy present but unparseable (nested brace -> 0 entries) must
+# FAIL CLOSED, never silently fall back to legacy "latest receipt" and pass on a
+# different label's green check.
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "build", "opts": { "x": "y" } } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert >/dev/null 2>&1 )
+[ "$?" = "1" ] && ok "policy: unparseable required entry fails closed (no silent legacy PASS)" || bad "policy fail-closed on unparseable"
+
+# P10. an invalid per-label command_regex fails closed (never errors into a PASS).
+d="$(newsandbox)"
+( cd "$d" && printf '{ "required": [ { "label": "test", "command_regex": "[" } ] }\n' > agent-done.json
+  bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert >/dev/null 2>&1 )
+[ "$?" = "1" ] && ok "policy: invalid command_regex fails closed" || bad "policy invalid regex"
+
+# P11. a non-integer --ttl is rejected with exit 2 (parity with the PS engine).
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert --label test --ttl abc >/dev/null 2>&1 )
+[ "$?" = "2" ] && ok "assert --ttl non-integer fails with exit 2" || bad "ttl integer validation"
+
+# P12. SECURITY: an agent-controlled command containing the proof marker must not
+# inject extra markers into `report --format pr` (would hijack the sticky comment).
+if command -v node >/dev/null 2>&1; then
+  d="$(newsandbox)"
+  ( cd "$d" && bash "$DONE_GATE" capture --label test -- printf '<!-- agent-done-or-not:proof -->' >/dev/null 2>&1 )
+  n="$( cd "$d" && node "$BIN" report --format pr 2>/dev/null | grep -c -- '<!-- agent-done-or-not:proof -->' )"
+  [ "$n" = "2" ] && ok "report --format pr neutralizes an injected proof marker" || bad "pr marker injection (got $n markers)"
+else
+  ok "pr marker-injection test skipped (no node on PATH)"
+fi
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

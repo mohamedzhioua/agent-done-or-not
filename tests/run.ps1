@@ -297,6 +297,170 @@ $payload = '{"session_id":"s2","stop_hook_active":false}'
 $s = Invoke-StopGate $d $proof $payload
 if ($s.ExitCode -eq 2) { Ok 'stop gate denies when the ledger is missing' } else { Bad "stop gate missing-ledger (got $($s.ExitCode))" }
 
+Write-Output '== policy + labels =='
+
+# Helper: write a policy file into a sandbox dir
+function Write-Policy {
+    param(
+        [string]$Dir,
+        [string]$Content
+    )
+    $path = Join-Path $Dir 'agent-done.json'
+    [System.IO.File]::WriteAllText($path, $Content, (New-Object System.Text.UTF8Encoding($false)))
+    return $path
+}
+
+# 1. Policy assert passes when all required labels have fresh passing receipts
+#    captured in SEPARATE runs (cross-run global search).
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test"},{"label":"build"}],"ttl":3600}'
+$proof = Join-Path $d '.proof'
+# Capture test in run1
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+# Capture build in a DIFFERENT run (run2) to exercise cross-run search
+$r2 = Invoke-Gate $d (@('capture', '--label', 'build', '--run', 'run2', '--') + (PassingCommand)) $proof
+# Assert with the policy file (no --label flags)
+$oldPol = $env:AGENT_DONE_POLICY
+$env:AGENT_DONE_POLICY = $policy
+$a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
+if ($null -eq $oldPol) { Remove-Item Env:\AGENT_DONE_POLICY -ErrorAction SilentlyContinue } else { $env:AGENT_DONE_POLICY = $oldPol }
+if ($a.ExitCode -eq 0) { Ok 'policy assert passes when all required labels have fresh passing receipts (cross-run)' } else { Bad "policy all-pass (exit $($a.ExitCode)) stderr=$($a.Stderr)" }
+
+# 2. Policy assert fails when a required label is missing
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test"},{"label":"build"}],"ttl":3600}'
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+# No 'build' receipt captured
+$a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
+if ($a.ExitCode -eq 1) { Ok 'policy assert fails when a required label is missing' } else { Bad "policy missing-label (exit $($a.ExitCode))" }
+
+# 3. Policy assert fails when a required label has a failing receipt
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test"},{"label":"build"}],"ttl":3600}'
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+$r2 = Invoke-Gate $d (@('capture', '--label', 'build', '--run', 'run2', '--') + (FailingCommand)) $proof
+$a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
+if ($a.ExitCode -eq 1) { Ok 'policy assert fails when a required label has a failing receipt' } else { Bad "policy failed-receipt (exit $($a.ExitCode))" }
+
+# 4. Per-label command_regex from policy — right command passes, wrong fails
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test","command_regex":"^pwsh"}],"ttl":3600}'
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+# Right command (PassingCommand starts with pwsh)
+$a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
+if ($a.ExitCode -eq 0) { Ok 'policy per-label command_regex passes for matching command' } else { Bad "policy regex-pass (exit $($a.ExitCode)) stderr=$($a.Stderr)" }
+
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test","command_regex":"^npm "}],"ttl":3600}'
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+# Wrong command (PassingCommand is pwsh, not npm)
+$a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
+if ($a.ExitCode -eq 1) { Ok 'policy per-label command_regex fails for non-matching command' } else { Bad "policy regex-fail (exit $($a.ExitCode))" }
+
+# 5. Policy ttl honored — stale receipt fails
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test"}],"ttl":1}'
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+# Backdate the epoch in the ledger
+$ledgerPath = Join-Path (Join-Path $proof 'run1') 'ledger.jsonl'
+$oldEp = [int][Math]::Floor((([DateTime]::UtcNow).AddHours(-2) - (New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc))).TotalSeconds)
+$content = [System.IO.File]::ReadAllText($ledgerPath)
+$content = $content -replace '"epoch":[0-9]+', ('"epoch":' + $oldEp)
+[System.IO.File]::WriteAllText($ledgerPath, $content, (New-Object System.Text.UTF8Encoding($false)))
+$a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
+if ($a.ExitCode -eq 1) { Ok 'policy ttl honored (stale receipt rejected)' } else { Bad "policy ttl (exit $($a.ExitCode))" }
+
+# 6. --no-policy falls back to legacy latest-receipt behavior even when policy file exists
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test"},{"label":"build"}],"ttl":3600}'
+$proof = Join-Path $d '.proof'
+# Only capture 'test'; policy would require 'build' too — but --no-policy ignores policy
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+$a = Invoke-Gate $d @('assert', '--no-policy') $proof
+# Legacy mode: asserts the latest receipt (test), which passes
+if ($a.ExitCode -eq 0) { Ok '--no-policy falls back to legacy latest behavior when policy file exists' } else { Bad "--no-policy fallback (exit $($a.ExitCode)) stderr=$($a.Stderr)" }
+
+# 7. Explicit --label still overrides policy (legacy path intact)
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test"},{"label":"build"}],"ttl":3600}'
+$proof = Join-Path $d '.proof'
+# Only capture 'test'; policy requires 'build' too, but CLI --label overrides
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+$a = Invoke-Gate $d @('assert', '--label', 'test', '--policy', $policy) $proof
+if ($a.ExitCode -eq 0) { Ok 'explicit --label overrides policy (legacy path)' } else { Bad "explicit --label override (exit $($a.ExitCode)) stderr=$($a.Stderr)" }
+
+# 8. assert --json includes "policy" key
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test"}],"ttl":3600}'
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+$a = Invoke-Gate $d @('assert', '--json', '--policy', $policy) $proof
+try {
+    $jobj = $a.Stdout.Trim() | ConvertFrom-Json
+    if ($a.ExitCode -eq 0 -and $jobj.PSObject.Properties.Name -contains 'policy' -and $jobj.policy -ne $null) {
+        Ok 'assert --json includes "policy" key in policy mode'
+    } else {
+        Bad "assert --json policy key (ok=$($jobj.ok) policy=$($jobj.policy))"
+    }
+} catch {
+    Bad "assert --json policy key parse: $_"
+}
+
+# 9. assert --json "policy" key is "" in legacy/CLI-label mode
+$d = New-Sandbox
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand))
+$a = Invoke-Gate $d @('assert', '--json', '--label', 'test') $r1.ProofDir
+try {
+    $jobj = $a.Stdout.Trim() | ConvertFrom-Json
+    if ($a.ExitCode -eq 0 -and $jobj.PSObject.Properties.Name -contains 'policy' -and $jobj.policy -eq '') {
+        Ok 'assert --json policy key is "" in legacy CLI-label mode'
+    } else {
+        Bad "assert --json policy empty (ok=$($jobj.ok) policy='$($jobj.policy)')"
+    }
+} catch {
+    Bad "assert --json policy empty parse: $_"
+}
+
+# 10. Weak-only (lint) assert prints WARNING but exits 0
+$d = New-Sandbox
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'lint', '--run', 'run1', '--') + (PassingCommand)) $proof
+$a = Invoke-Gate $d @('assert', '--label', 'lint') $proof
+if ($a.ExitCode -eq 0 -and $a.Stderr -match 'WARNING') {
+    Ok 'weak-only (lint) assert exits 0 and prints WARNING'
+} else {
+    Bad "weak-only lint (exit=$($a.ExitCode) stderr=$($a.Stderr))"
+}
+
+# 11. SECURITY: a policy present but unparseable (nested brace -> 0 entries) must
+#     FAIL CLOSED, never silently fall back to legacy and pass on another label.
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"build","opts":{"x":"y"}}]}'
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+$a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
+if ($a.ExitCode -eq 1) { Ok 'policy: unparseable required entry fails closed (no silent legacy PASS)' } else { Bad "policy fail-closed unparseable (exit $($a.ExitCode))" }
+
+# 12. An invalid per-label command_regex fails closed (does not throw; still JSON).
+$d = New-Sandbox
+$policy = Write-Policy $d '{"required":[{"label":"test","command_regex":"["}]}'
+$proof = Join-Path $d '.proof'
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
+$a = Invoke-Gate $d @('assert', '--json', '--policy', $policy) $proof
+$jsonOk = $false; try { $o = $a.Stdout.Trim() | ConvertFrom-Json; $jsonOk = ($o.ok -eq $false) } catch {}
+if ($a.ExitCode -eq 1 -and $jsonOk) { Ok 'policy: invalid command_regex fails closed (no throw, valid JSON)' } else { Bad "policy invalid regex (exit $($a.ExitCode)) jsonOk=$jsonOk" }
+
+# 13. A non-integer --ttl is rejected with exit 2 (parity with the bash engine).
+$d = New-Sandbox
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand))
+$a = Invoke-Gate $d @('assert', '--label', 'test', '--ttl', 'abc') $r1.ProofDir
+if ($a.ExitCode -eq 2) { Ok 'assert --ttl non-integer fails with exit 2' } else { Bad "ttl integer validation (exit $($a.ExitCode))" }
+
 Write-Output ''
 Write-Output ("Result: {0} passed, {1} failed" -f $pass, $fail)
 if ($fail -ne 0) { exit 1 }

@@ -144,10 +144,14 @@ the same checkout:
     mode: assert
     labels: "test build"
     ttl: "3600"
+    pr-comment: "true"   # optional: upsert a sticky proof comment on the PR
 ```
 
 Run `actions/checkout` first, then produce receipts earlier in the job with
-`bash done-gate.sh capture` before the action asserts them.
+`bash done-gate.sh capture` before the action asserts them. With
+`pr-comment: "true"` on a pull request, the action upserts a single sticky
+proof comment (✅/❌ status + the gate output); it never changes the job's
+pass/fail — `assert` still decides that.
 
 ### Claude Code plugin
 
@@ -188,7 +192,7 @@ Add this to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/mohamedzhioua/agent-done-or-not
-    rev: v0.7.0
+    rev: v0.8.0
     hooks:
       - id: agent-done-assert
 ```
@@ -219,6 +223,68 @@ bash done-gate.sh assert --json --label test
 ```
 
 Every command supports `--json` for stable, dependency-free output.
+
+## Required checks (policy)
+
+A rule in `CLAUDE.md` makes the agent *run something*. A **policy** makes it run
+the **right** things. Drop an `agent-done.json` at your repo root:
+
+```json
+{
+  "required": [
+    { "label": "test",  "command_regex": "(npm|pnpm|yarn) (run )?test|pytest" },
+    { "label": "build", "command_regex": "(npm|pnpm) run build" }
+  ],
+  "ttl": 3600
+}
+```
+
+Now `assert` (with no `--label`) requires a **fresh, passing** receipt for every
+listed label *and* checks that each was produced by a command matching its
+`command_regex` — so `true` or `echo ok` can't satisfy a `test` requirement:
+
+```bash
+bash done-gate.sh assert          # reads agent-done.json automatically
+bash done-gate.sh assert --json   # adds a "policy" field
+```
+
+Resolution order is **explicit `--label` → policy file → most-recent receipt**;
+pass `--no-policy` to force the legacy path, or `--policy <file>` to point
+elsewhere. Receipts captured in separate runs still count (policy mode searches
+all runs per label). Scaffold one from your detected stack with
+`npx agent-done-or-not init --policy`. The format is documented in
+[`policy.schema.json`](policy.schema.json).
+
+**Wrong-check warning.** Labels carry a strength taxonomy (strong: `test`,
+`build`, `typecheck`, `e2e`, `smoke`…; weak: `lint`, `format`, `manual`…). If the
+only passing evidence is a weak check, `assert` and `report` print an advisory
+`latest proof is lint-only — this may not verify the requested behavior`. It's a
+nudge, never a blocker — the exit code is unchanged.
+
+## Share the proof
+
+Turn a ledger into something pasteable. `report` leads with a human card; the
+`pr` format is a sticky, marker-wrapped comment for pull requests:
+
+```bash
+npx agent-done-or-not report                 # card + table
+npx agent-done-or-not report --format pr     # paste into a PR / issue
+```
+
+```markdown
+### ✅ Proof of Done
+
+| | |
+|---|---|
+| **Status** | PASS |
+| **Latest** | `npm test` · exit 0 · 2m ago |
+
+**Checks**
+- ✅ `test` — `npm test` — exit `0` — 2m ago — `sha256:9f2c…`
+```
+
+In CI, the [GitHub Action](#github-action) can post this as a sticky PR comment —
+set `pr-comment: "true"`.
 
 ## How it works
 
@@ -259,8 +325,10 @@ a forcing function, not a sandbox; here's the honest boundary.
 - Malformed/empty proof state to slip through → blocked (the gate **fails
   closed**).
 - An infinite block loop → bounded safety valve (`AGENT_DONE_MAX_RETRIES`).
-- Running the wrong class of check → constrain it with
-  `assert --allow-command-regex`.
+- Running the wrong class of check → constrain it with an `agent-done.json`
+  policy (per-label `command_regex`) or `assert --allow-command-regex`. A policy
+  that is present but unparseable **fails closed** — it never silently degrades
+  to the most-recent receipt.
 
 **It does NOT claim to stop these** (out of scope by design):
 - Choosing a *weak* check (an empty test suite "passes"). You pick the command;
