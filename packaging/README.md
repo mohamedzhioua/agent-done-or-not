@@ -1,9 +1,9 @@
 # Packaging
 
-Distribution manifests for `agent-done-or-not`. The bash engine
-(`done-gate.sh` + `stop-gate.sh`) is canonical; everything here is a thin
-wrapper that fetches a tagged source tarball and exposes an
-`agent-done-or-not` launcher on `PATH`.
+Distribution manifests for `agent-done-or-not`. Homebrew exposes the Bash
+engine (`done-gate.sh` + `stop-gate.sh`); Scoop exposes the native PowerShell
+engine (`done-gate.ps1` + `stop-gate.ps1`). Both fetch a tagged source tarball
+and expose an `agent-done-or-not` launcher on `PATH`.
 
 Both manifests are pinned to a release tarball and its SHA-256. **When you cut
 a new release, bump `version`, the `url`, and the `sha256`/`hash` in both files
@@ -36,8 +36,8 @@ brew audit --strict --new ./packaging/homebrew/agent-done-or-not.rb
 
 ## Scoop (`scoop/agent-done-or-not.json`)
 
-Windows. The engine runs on bash, so users need Git for Windows
-(`scoop install git`) on `PATH`. Publishing:
+Windows. The launcher runs the native PowerShell engine, so no Git Bash install
+is required. Publishing:
 
 1. Create a public repo `mohamedzhioua/scoop-bucket`.
 2. Copy this file to `bucket/agent-done-or-not.json` in that repo and push.

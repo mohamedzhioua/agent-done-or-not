@@ -7,17 +7,17 @@
   "hash": "1d969443dbbb37926f035b80e7988925c8ed04f93c2cce16dbb82d4649e81ce4",
   "extract_dir": "agent-done-or-not-0.6.0",
   "pre_install": [
-    "# The engine is bash; ship a .cmd launcher that forwards to the bundled",
-    "# done-gate.sh via bash (Git for Windows). %~dp0 resolves to this app dir,",
-    "# and cwd is preserved so .agent-proof\\ lands in the caller's repo.",
+    "# Ship a .cmd launcher that forwards to the bundled native PowerShell",
+    "# engine. %~dp0 resolves to this app dir, and cwd is preserved so",
+    "# .agent-proof\\ lands in the caller's repo.",
     "Set-Content -Path \"$dir\\agent-done-or-not.cmd\" -Encoding Ascii -Value @(",
     "  '@echo off',",
-    "  'bash \"%~dp0done-gate.sh\" %*'",
+    "  'powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0done-gate.ps1\" %*'",
     ")"
   ],
   "bin": "agent-done-or-not.cmd",
   "suggest": {
-    "bash (provided by Git for Windows)": "git"
+    "PowerShell 7 for faster startup and newer TLS defaults": "pwsh"
   },
   "notes": [
     "v0.6.0 ships native PowerShell engines: done-gate.ps1 and stop-gate.ps1.",

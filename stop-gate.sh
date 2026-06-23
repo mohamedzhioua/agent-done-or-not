@@ -38,6 +38,19 @@
 #         2 = block.
 set -uo pipefail
 
+normalize_path() {
+  case "$1" in
+    [A-Za-z]:/*)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -u "$1"
+      else
+        printf '%s' "$1"
+      fi
+      ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # --- escape hatch -------------------------------------------------------------
 [ "${AGENT_DONE_OFF:-0}" = "1" ] && exit 0
 
@@ -63,10 +76,11 @@ extract_str() {
 
 # --- locate the proof dir -----------------------------------------------------
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-  root="$CLAUDE_PROJECT_DIR"
+  root="$(normalize_path "$CLAUDE_PROJECT_DIR")"
 else
   root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$root" ] || root="$(cd "$(dirname "$0")" && pwd)"
+  root="$(normalize_path "$root")"
 fi
 proof_dir="${AGENT_DONE_DIR:-$root/.agent-proof}"
 latest_ptr="$proof_dir/latest"

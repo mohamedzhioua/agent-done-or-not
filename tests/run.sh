@@ -357,16 +357,10 @@ echo "== packaging (Homebrew + Scoop) =="
 
 BREW="$REPO/packaging/homebrew/agent-done-or-not.rb"
 SCOOP="$REPO/packaging/scoop/agent-done-or-not.json"
-# The tarball SHA-256 the manifests must both pin (v0.5.0 source archive).
-PINNED_SHA="7d0292002748512757ffb8dab47765f9d8dc7572e4c8976e195db7e00f0b91f1"
 
 # 47. Homebrew formula declares the class, pinned tarball, sha256, and bash dep.
-if [ -f "$BREW" ] \
-   && grep -q '^class AgentDoneOrNot < Formula$' "$BREW" \
-   && grep -Fq 'url "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.5.0.tar.gz"' "$BREW" \
-   && grep -Fq "sha256 \"$PINNED_SHA\"" "$BREW" \
-   && grep -Fq 'depends_on "bash"' "$BREW"; then
-  ok "homebrew formula pins the v0.5.0 tarball, sha256, and bash dependency"
+if python3 -c "import re,sys; s=open(sys.argv[1]).read(); assert re.search(r'^class AgentDoneOrNot < Formula$', s, re.M); assert re.search(r'url \"https://github\.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+\\.tar\\.gz\"', s); assert re.search(r'sha256 \"[0-9a-f]{64}\"', s); assert 'depends_on \"bash\"' in s" "$BREW" >/dev/null 2>&1; then
+  ok "homebrew formula pins a tagged tarball, sha256, and bash dependency"
 else bad "homebrew formula structure/pin"; fi
 
 # 48. Homebrew formula installs the engine and provides a launcher with a test.
@@ -376,13 +370,13 @@ if grep -Fq 'libexec.install "done-gate.sh", "stop-gate.sh"' "$BREW" \
   ok "homebrew formula installs the engine, a launcher, and a test block"
 else bad "homebrew formula install/test block"; fi
 
-# 49. Scoop manifest is valid JSON pinning the same version, tarball, and hash.
-python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['version']=='0.5.0'; assert d['url'].endswith('/v0.5.0.tar.gz'); assert d['hash']==sys.argv[2]; assert d['extract_dir']=='agent-done-or-not-0.5.0'; assert d['bin']=='agent-done-or-not.cmd'" "$SCOOP" "$PINNED_SHA" >/dev/null 2>&1 \
-  && ok "scoop manifest pins v0.5.0 tarball/hash and shims a launcher" || bad "scoop manifest structure/pin"
+# 49. Scoop manifest is valid JSON and agrees with the Homebrew pinned tarball.
+python3 -c "import json,re,sys; brew=open(sys.argv[1]).read(); scoop=json.load(open(sys.argv[2])); b_url=re.search(r'url \"([^\"]+)\"', brew).group(1); b_hash=re.search(r'sha256 \"([0-9a-f]{64})\"', brew).group(1); v=scoop['version']; assert scoop['url']==b_url; assert scoop['url'].endswith('/v%s.tar.gz' % v); assert scoop['hash']==b_hash; assert scoop['extract_dir']=='agent-done-or-not-%s' % v; assert scoop['bin']=='agent-done-or-not.cmd'" "$BREW" "$SCOOP" >/dev/null 2>&1 \
+  && ok "scoop manifest pins the same tagged tarball/hash and shims a launcher" || bad "scoop manifest structure/pin"
 
-# 50. Scoop launcher forwards to the bundled done-gate.sh via bash.
-if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); pi='\n'.join(d['pre_install']); assert 'done-gate.sh' in pi and '%~dp0' in pi and 'agent-done-or-not.cmd' in pi" "$SCOOP" >/dev/null 2>&1; then
-  ok "scoop pre_install writes a .cmd launcher that calls the bundled engine"
+# 50. Scoop launcher forwards to the bundled native PowerShell engine.
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); pi='\n'.join(d['pre_install']); assert 'done-gate.ps1' in pi and 'powershell -NoProfile' in pi and '%~dp0' in pi and 'agent-done-or-not.cmd' in pi" "$SCOOP" >/dev/null 2>&1; then
+  ok "scoop pre_install writes a .cmd launcher that calls the bundled PowerShell engine"
 else bad "scoop pre_install launcher"; fi
 
 echo "== PowerShell port =="

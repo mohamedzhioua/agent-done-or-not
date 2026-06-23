@@ -33,7 +33,20 @@
 # ledger is hand-written JSONL. No network, no LLM, no extra tooling.
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+normalize_path() {
+  case "$1" in
+    [A-Za-z]:/*)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -u "$1"
+      else
+        printf '%s' "$1"
+      fi
+      ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+ROOT="$(normalize_path "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
 PROOF_DIR="${AGENT_DONE_DIR:-$ROOT/.agent-proof}"
 
 die() { printf 'done-gate: %s\n' "$1" >&2; exit 2; }

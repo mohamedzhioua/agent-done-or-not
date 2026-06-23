@@ -87,12 +87,12 @@ npx agent-done-or-not capture --label test -- npm test
 npx agent-done-or-not assert --label test --ttl 3600
 ```
 
-Requires `bash` on PATH (Git Bash on Windows); the npm package is a thin wrapper
-over the same `done-gate.sh`. Publishing to npm is the maintainer's step.
+The npm wrapper uses the bundled Bash engine when Bash is available, and falls
+back to the bundled PowerShell engine on Windows.
 
 ### Homebrew / Scoop
 
-Install a global `agent-done-or-not` launcher (both wrap the same `done-gate.sh`):
+Install a global `agent-done-or-not` launcher:
 
 ```bash
 # macOS / Linux
@@ -100,7 +100,7 @@ brew install mohamedzhioua/tap/agent-done-or-not
 ```
 
 ```powershell
-# Windows (requires Git for Windows for bash)
+# Windows (native PowerShell launcher)
 scoop bucket add agent-done-or-not https://github.com/mohamedzhioua/scoop-bucket
 scoop install agent-done-or-not
 ```

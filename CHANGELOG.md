@@ -26,7 +26,7 @@ AI coding tool on the skills.sh platform.
   Wires into Claude Code `settings.json` with one `powershell -NoProfile -File`
   command. 3 new parity test scenarios added to `tests/run.ps1`.
 - Homebrew formula (`packaging/homebrew/agent-done-or-not.rb`) and Scoop manifest
-  (`packaging/scoop/agent-done-or-not.json`), both pinned to the v0.5.0 source
+  (`packaging/scoop/agent-done-or-not.json`), both pinned to the v0.6.0 source
   tarball + SHA-256. Each is a thin wrapper that installs the canonical
   `done-gate.sh`/`stop-gate.sh` engine and puts an `agent-done-or-not` launcher
   on PATH; `packaging/README.md` documents the tap/bucket publish steps.
