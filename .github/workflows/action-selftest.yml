@@ -38,3 +38,18 @@ jobs:
             echo "Expected the action to fail without a receipt, got ${{ steps.missing_receipt.outcome }}"
             exit 1
           fi
+
+  new-inputs-parse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture self-test receipt
+        run: bash done-gate.sh capture --label selftest -- true
+
+      - name: Assert with new pr-comment input present (pr-comment disabled)
+        uses: ./
+        with:
+          mode: assert
+          labels: selftest
+          pr-comment: "false"

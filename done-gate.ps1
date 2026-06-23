@@ -22,7 +22,7 @@ done-gate.ps1 - proof receipts for AI coding agents.
 
 Subcommands:
   capture --label L [--run R] [--json] -- CMD [ARGS...]
-  assert  [--label L ...] [--run R] [--ttl S] [--allow-command-regex RE] [--json]
+  assert  [--label L ...] [--run R] [--ttl S] [--allow-command-regex RE] [--policy FILE] [--no-policy] [--json]
   verify  --label L [--run R] [--json] --sha HEX
   show    [--run R] [--json]
   -h | --help | help
@@ -114,6 +114,76 @@ function Get-RelativeLogPath {
         $relative = $logFull.Substring($prefix2.Length)
     }
     return ($relative -replace '\\', '/')
+}
+
+function Resolve-PolicyPath {
+    param(
+        [AllowNull()][string]$Explicit,
+        [string]$Root
+    )
+    if (-not [string]::IsNullOrEmpty($Explicit)) { return $Explicit }
+    if ($env:AGENT_DONE_POLICY) { return $env:AGENT_DONE_POLICY }
+    $def = Join-Path $Root 'agent-done.json'
+    if (Test-Path -LiteralPath $def) { return $def }
+    return ''
+}
+
+# Emit one PSCustomObject per required entry with Label and Regex properties.
+function Get-PolicyEntries {
+    param([string]$File)
+    if (-not (Test-Path -LiteralPath $File)) { return @() }
+    $raw = [System.IO.File]::ReadAllText($File, (Get-Utf8NoBom))
+    # Flatten newlines as per spec
+    $flat = $raw -replace "`r`n|`r|`n", ' '
+    $entries = New-Object System.Collections.ArrayList
+    $objMatches = [regex]::Matches($flat, '\{[^{}]*\}')
+    foreach ($m in $objMatches) {
+        $obj = $m.Value
+        $labelM = [regex]::Match($obj, '"label"\s*:\s*"([^"]*)"')
+        if (-not $labelM.Success) { continue }
+        $lbl = $labelM.Groups[1].Value
+        $rxM = [regex]::Match($obj, '"command_regex"\s*:\s*"([^"]*)"')
+        $rx = if ($rxM.Success) { $rxM.Groups[1].Value } else { '' }
+        [void]$entries.Add([pscustomobject]@{ Label = $lbl; Regex = $rx })
+    }
+    return @($entries)
+}
+
+# Top-level "ttl" integer from the policy file, or empty string.
+function Get-PolicyTtl {
+    param([string]$File)
+    if (-not (Test-Path -LiteralPath $File)) { return '' }
+    $raw = [System.IO.File]::ReadAllText($File, (Get-Utf8NoBom))
+    $flat = $raw -replace "`r`n|`r|`n", ' '
+    $m = [regex]::Match($flat, '"ttl"\s*:\s*([0-9]+)')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ''
+}
+
+# Label strength taxonomy
+function Test-LabelWeak {
+    param([string]$Label)
+    return ($Label -in @('lint','format','fmt','style','manual','docs'))
+}
+
+# Most recent receipt for a label across ALL run dirs (highest epoch), or ''.
+function Latest-ForLabelGlobal {
+    param(
+        [string]$ProofDir,
+        [string]$Label
+    )
+    $needle = '"label":"' + (Json-Escape $Label) + '"'
+    $bestEp = [int64]-1
+    $best = ''
+    foreach ($ledgerPath in (Get-ChildItem -Path $ProofDir -Recurse -Filter 'ledger.jsonl' -ErrorAction SilentlyContinue)) {
+        $lines = @(Get-Content -LiteralPath $ledgerPath.FullName | Where-Object { $_.Contains($needle) })
+        if ($lines.Count -eq 0) { continue }
+        $line = [string]$lines[$lines.Count - 1]
+        $epStr = (Rec-Field $line '"epoch":([0-9]+)')
+        $ep = if ($epStr -match '^[0-9]+$') { [int64]$epStr } else { [int64]0 }
+        if ($ep -gt $bestEp) { $bestEp = $ep; $best = $line }
+    }
+    return $best
 }
 
 function Resolve-RunForRead {
@@ -284,7 +354,10 @@ function Cmd-Assert {
     $ttl = ''
     $regex = ''
     $json = $false
+    $policyFlag = ''
+    $noPolicy = $false
     $labels = New-Object System.Collections.ArrayList
+    $labelRegexes = New-Object System.Collections.ArrayList
     $i = 0
     while ($i -lt $Argv.Count) {
         switch ($Argv[$i]) {
@@ -304,6 +377,13 @@ function Cmd-Assert {
                 if ($i + 1 -ge $Argv.Count) { Die 'assert: --allow-command-regex requires a value' }
                 $regex = $Argv[$i + 1]; $i += 2
             }
+            '--policy' {
+                if ($i + 1 -ge $Argv.Count) { Die 'assert: --policy requires a value' }
+                $policyFlag = $Argv[$i + 1]; $i += 2
+            }
+            '--no-policy' {
+                $noPolicy = $true; $i += 1
+            }
             '--json' {
                 $json = $true; $i += 1
             }
@@ -313,53 +393,126 @@ function Cmd-Assert {
         }
     }
 
-    if ([string]::IsNullOrEmpty($ttl)) {
-        if ($env:AGENT_DONE_TTL) { $ttl = $env:AGENT_DONE_TTL } else { $ttl = '3600' }
-    }
-    $ttlInt = 3600
-    if (-not [int64]::TryParse($ttl, [ref]$ttlInt)) { Die 'assert: --ttl requires an integer value' }
     if ([string]::IsNullOrEmpty($regex) -and $env:AGENT_DONE_ALLOWED_COMMANDS) {
         $regex = $env:AGENT_DONE_ALLOWED_COMMANDS
     }
 
-    $run = Resolve-RunForRead $run $script:PROOF_DIR
-    if ([string]::IsNullOrEmpty($run)) {
-        if ($json) { Write-Output ('{{"ok":false,"run":"","ttl":{0},"checks":[]}}' -f $ttlInt) }
-        Write-Stderr 'done-gate: assert FAIL - no proof run found (capture something first)'
-        exit 1
-    }
-    if (-not (Test-ValidName $run)) { Die 'assert: invalid run id' }
-    foreach ($label in $labels) {
-        if (-not (Test-ValidName $label)) { Die "assert: --label must match [A-Za-z0-9._-] and contain no '..'" }
+    # Resolution order: explicit CLI --label (legacy) > policy file > latest receipt.
+    $policyUsed = ''
+    $policyMode = $false
+
+    if ($labels.Count -gt 0) {
+        # Legacy CLI-label path: per-label regex = global --allow-command-regex
+        foreach ($_ in $labels) { [void]$labelRegexes.Add($regex) }
+    } elseif (-not $noPolicy) {
+        $policyPath = Resolve-PolicyPath $policyFlag $script:ROOT
+        if (-not [string]::IsNullOrEmpty($policyPath) -and (Test-Path -LiteralPath $policyPath)) {
+            # Compute relative path for policyUsed (mirror bash: strip ROOT/ prefix)
+            $rootFull = [IO.Path]::GetFullPath($script:ROOT).TrimEnd('\','/')
+            $polFull  = [IO.Path]::GetFullPath($policyPath)
+            $prefix1  = $rootFull + [IO.Path]::DirectorySeparatorChar
+            $prefix2  = $rootFull + [IO.Path]::AltDirectorySeparatorChar
+            if ($polFull.StartsWith($prefix1, [StringComparison]::OrdinalIgnoreCase)) {
+                $policyUsed = ($polFull.Substring($prefix1.Length)) -replace '\\','/'
+            } elseif ($polFull.StartsWith($prefix2, [StringComparison]::OrdinalIgnoreCase)) {
+                $policyUsed = ($polFull.Substring($prefix2.Length)) -replace '\\','/'
+            } else {
+                $policyUsed = $policyPath -replace '\\','/'
+            }
+
+            $entries = @(Get-PolicyEntries $policyPath)
+            foreach ($entry in $entries) {
+                if ([string]::IsNullOrEmpty($entry.Label)) { continue }
+                [void]$labels.Add($entry.Label)
+                $entryRx = if (-not [string]::IsNullOrEmpty($entry.Regex)) { $entry.Regex } else { $regex }
+                [void]$labelRegexes.Add($entryRx)
+            }
+            # Policy present but no parseable "required" entries — FAIL CLOSED
+            # instead of silently degrading to latest-receipt (a policy that says
+            # "do more" must never quietly do less).
+            if ($labels.Count -eq 0) {
+                if ($json) { Write-Output ('{{"ok":false,"reason":"policy present but no parseable required entries","policy":"{0}","checks":[]}}' -f (Json-Escape $policyUsed)) }
+                Write-Stderr ('done-gate: assert FAIL — policy {0} present but no parseable "required" entries (check for nested braces / quoting)' -f $policyUsed)
+                exit 1
+            }
+            $policyMode = $true
+            if ([string]::IsNullOrEmpty($ttl)) {
+                $pttl = Get-PolicyTtl $policyPath
+                if (-not [string]::IsNullOrEmpty($pttl)) { $ttl = $pttl }
+            }
+        }
     }
 
-    $ledger = Join-Path (Join-Path $script:PROOF_DIR $run) 'ledger.jsonl'
-    if (-not (Test-Path -LiteralPath $ledger)) {
-        if ($json) { Write-Output ('{{"ok":false,"run":"{0}","ttl":{1},"checks":[]}}' -f (Json-Escape $run), $ttlInt) }
-        Write-Stderr "done-gate: assert FAIL - no ledger for run=$run"
-        exit 1
+    if ([string]::IsNullOrEmpty($ttl)) {
+        if ($env:AGENT_DONE_TTL) { $ttl = $env:AGENT_DONE_TTL } else { $ttl = '3600' }
     }
+    # Validate as a non-negative integer (mirror bash) so identical input yields
+    # identical exit/JSON across engines.
+    if ($ttl -notmatch '^[0-9]+$') { Die 'assert: --ttl must be a non-negative integer' }
+    $ttlInt = [int64]$ttl
 
-    if ($labels.Count -eq 0) {
-        $lines = @(Get-Content -LiteralPath $ledger | Where-Object { $_ -ne '' })
-        if ($lines.Count -eq 0) {
-            if ($json) { Write-Output ('{{"ok":false,"run":"{0}","ttl":{1},"checks":[]}}' -f (Json-Escape $run), $ttlInt) }
-            Write-Stderr 'done-gate: assert FAIL - empty ledger'
+    # Run-scoped modes need a resolved run + ledger. Policy mode searches all runs.
+    $ledger = ''
+    $runLabel = $run
+
+    if ($policyMode) {
+        $runLabel = '*'
+        $anyLedger = @(Get-ChildItem -Path $script:PROOF_DIR -Recurse -Filter 'ledger.jsonl' -ErrorAction SilentlyContinue)
+        if ($anyLedger.Count -eq 0) {
+            if ($json) { Write-Output ('{{"ok":false,"reason":"no proof receipts found","policy":"{0}","checks":[]}}' -f (Json-Escape $policyUsed)) }
+            Write-Stderr 'done-gate: assert FAIL — no proof receipts found (capture something first)'
             exit 1
         }
-        $lastLabel = Receipt-Label ([string]$lines[$lines.Count - 1])
-        [void]$labels.Add($lastLabel)
+    } else {
+        $run = Resolve-RunForRead $run $script:PROOF_DIR
+        if ([string]::IsNullOrEmpty($run)) {
+            if ($json) { Write-Output ('{{"ok":false,"reason":"no proof run found","policy":"{0}","checks":[]}}' -f (Json-Escape $policyUsed)) }
+            Write-Stderr 'done-gate: assert FAIL — no proof run found (capture something first)'
+            exit 1
+        }
+        if (-not (Test-ValidName $run)) { Die 'assert: invalid run id' }
+        $ledger = Join-Path (Join-Path $script:PROOF_DIR $run) 'ledger.jsonl'
+        $runLabel = $run
+        if (-not (Test-Path -LiteralPath $ledger)) {
+            if ($json) { Write-Output ('{{"ok":false,"reason":"ledger missing","run":"{0}","policy":"{1}","checks":[]}}' -f (Json-Escape $run), (Json-Escape $policyUsed)) }
+            Write-Stderr "done-gate: assert FAIL — no ledger for run=$run"
+            exit 1
+        }
+
+        # With no explicit/policy labels, assert against the most recent receipt.
+        if ($labels.Count -eq 0) {
+            $lines = @(Get-Content -LiteralPath $ledger | Where-Object { $_ -ne '' })
+            if ($lines.Count -eq 0) {
+                if ($json) { Write-Output ('{{"ok":false,"run":"{0}","ttl":{1},"policy":"{2}","checks":[]}}' -f (Json-Escape $run), $ttlInt, (Json-Escape $policyUsed)) }
+                Write-Stderr 'done-gate: assert FAIL — empty ledger'
+                exit 1
+            }
+            $lastLabel = Receipt-Label ([string]$lines[$lines.Count - 1])
+            [void]$labels.Add($lastLabel)
+            [void]$labelRegexes.Add($regex)
+        }
     }
 
     $nowEpoch = Get-UnixEpoch ([DateTime]::UtcNow)
     $overall = 0
     $checks = New-Object System.Collections.ArrayList
+    $anyPass = $false
+    $weakOnly = $true
+    $warnLabel = ''
 
-    foreach ($label in $labels) {
-        $line = Latest-ForLabel $ledger $label
+    for ($idx = 0; $idx -lt $labels.Count; $idx++) {
+        $label = [string]$labels[$idx]
+        $lrx = if ($idx -lt $labelRegexes.Count) { [string]$labelRegexes[$idx] } else { '' }
+
+        if ($policyMode) {
+            $line = Latest-ForLabelGlobal $script:PROOF_DIR $label
+        } else {
+            $line = Latest-ForLabel $ledger $label
+        }
+
         $found = -not [string]::IsNullOrEmpty($line)
         $exitCode = ''
-        $epoch = ''
+        $epochStr = ''
         $sha = ''
         $cmd = ''
         $fresh = $false
@@ -368,24 +521,32 @@ function Cmd-Assert {
 
         if ($found) {
             $exitCode = Receipt-ExitCode $line
-            $epoch = Receipt-Epoch $line
+            $epochStr = Receipt-Epoch $line
             $sha = Receipt-Sha $line
             $cmd = Receipt-Command $line
 
             if ($ttlInt -le 0) {
                 $fresh = $true
-            } elseif ($epoch -match '^[0-9]+$' -and (($nowEpoch - [int64]$epoch) -le $ttlInt)) {
+            } elseif ($epochStr -match '^[0-9]+$' -and (($nowEpoch - [int64]$epochStr) -le $ttlInt)) {
                 $fresh = $true
             }
 
-            if (-not [string]::IsNullOrEmpty($regex)) {
-                $commandAllowed = ($cmd -match $regex)
+            if (-not [string]::IsNullOrEmpty($lrx)) {
+                # An invalid regex must fail closed (not throw), mirroring bash's
+                # `grep -Eq ... 2>/dev/null` which treats a bad pattern as no-match.
+                try { $commandAllowed = ($cmd -match $lrx) } catch { $commandAllowed = $false }
             }
 
             if ($exitCode -eq '0' -and $fresh -and $commandAllowed) { $ok = $true }
         }
 
         if (-not $ok) { $overall = 1 }
+
+        # Advisory wrong-check bookkeeping (never affects exit code)
+        if ($ok) {
+            $anyPass = $true
+            if (Test-LabelWeak $label) { $warnLabel = $label } else { $weakOnly = $false }
+        }
 
         if ($json) {
             $exitJson = 'null'
@@ -408,7 +569,10 @@ function Cmd-Assert {
 
     if ($json) {
         $okText = if ($overall -eq 0) { 'true' } else { 'false' }
-        Write-Output ('{{"ok":{0},"run":"{1}","ttl":{2},"checks":[{3}]}}' -f $okText, (Json-Escape $run), $ttlInt, ($checks -join ','))
+        Write-Output ('{{"ok":{0},"run":"{1}","ttl":{2},"policy":"{3}","checks":[{4}]}}' -f `
+            $okText, (Json-Escape $runLabel), $ttlInt, (Json-Escape $policyUsed), ($checks -join ','))
+    } elseif ($anyPass -and $weakOnly) {
+        Write-Stderr "done-gate: WARNING — latest proof is $warnLabel-only — this may not verify the requested behavior"
     }
     exit $overall
 }

@@ -26,6 +26,14 @@ inputs:
     description: Directory to run the assertion from.
     required: false
     default: "."
+  pr-comment:
+    description: When "true" and the event is a pull_request, upsert a sticky PR comment with the proof summary.
+    required: false
+    default: "false"
+  github-token:
+    description: GitHub token used to post the PR comment.
+    required: false
+    default: ${{ github.token }}
 
 runs:
   using: composite
@@ -92,4 +100,80 @@ runs:
           } >> "$GITHUB_STEP_SUMMARY"
         fi
 
+        # Write assert output + status to temp files so the comment step can read them.
+        if [ -n "${RUNNER_TEMP:-}" ]; then
+          printf '%s' "$output" > "$RUNNER_TEMP/agent-done-assert-output.txt"
+          printf '%s' "$status" > "$RUNNER_TEMP/agent-done-assert-status.txt"
+        fi
+
         exit "$status"
+
+    - name: Post proof summary as PR comment
+      if: ${{ inputs.pr-comment == 'true' && github.event_name == 'pull_request' }}
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        set -uo pipefail
+
+        if [ -z "${PR_NUMBER:-}" ]; then
+          printf 'agent-done-or-not: PR number not available; skipping comment.\n' >&2
+          exit 0
+        fi
+
+        # Read assert output and status captured by the assert step.
+        assert_output=""
+        assert_status="unknown"
+        if [ -n "${RUNNER_TEMP:-}" ]; then
+          if [ -f "$RUNNER_TEMP/agent-done-assert-output.txt" ]; then
+            assert_output="$(cat "$RUNNER_TEMP/agent-done-assert-output.txt")"
+          fi
+          if [ -f "$RUNNER_TEMP/agent-done-assert-status.txt" ]; then
+            assert_status="$(cat "$RUNNER_TEMP/agent-done-assert-status.txt")"
+          fi
+        fi
+
+        if [ "$assert_status" = "0" ]; then
+          status_icon="OK"
+          status_word="PASS"
+        else
+          status_icon="FAIL"
+          status_word="FAILED"
+        fi
+
+        # HTML-escape the assert output for use in a <pre> block (agent-controlled text).
+        escaped_output="$(printf '%s\n' "$assert_output" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+        # Build the comment body with printf (no heredoc to avoid YAML parse issues).
+        # Opening and closing markers let the action find and update the comment in place.
+        marker="<!-- agent-done-or-not:proof -->"
+        status_line="${status_icon} Proof of Done - ${status_word} (exit ${assert_status})"
+        comment_body="$(printf '%s\n%s\n\n<pre>\n%s\n</pre>\n%s' \
+          "$marker" \
+          "$status_line" \
+          "$escaped_output" \
+          "$marker")"
+
+        # Upsert: find an existing comment containing the marker, PATCH it; else POST new.
+        existing_comment_id="$(gh api \
+          "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+          --paginate \
+          --jq '.[] | select(.body | contains("<!-- agent-done-or-not:proof -->")) | .id' \
+          2>/dev/null | head -n1 || true)"
+
+        if [ -n "$existing_comment_id" ]; then
+          gh api \
+            --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_comment_id}" \
+            --field body="$comment_body" \
+            >/dev/null
+        else
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --field body="$comment_body" \
+            >/dev/null
+        fi

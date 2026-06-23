@@ -15,12 +15,38 @@ const args = process.argv.slice(2);
 const proofStart = '<!-- agent-done-or-not:start -->';
 const proofEnd = '<!-- agent-done-or-not:end -->';
 
+// Label taxonomy for wrong-check warning (§3)
+const WEAK_LABELS = new Set(['lint', 'format', 'fmt', 'style', 'manual', 'docs']);
+const STRONG_LABELS = new Set(['test', 'tests', 'e2e', 'build', 'typecheck', 'smoke', 'run',
+  'browser', 'curl', 'integration', 'unit', 'check']);
+
+function isWeakLabel(label) {
+  return WEAK_LABELS.has(String(label || '').toLowerCase());
+}
+
+// Unknown labels are treated as STRONG (don't nag on custom verifying commands)
+function isStrongLabel(label) {
+  const l = String(label || '').toLowerCase();
+  return STRONG_LABELS.has(l) || !WEAK_LABELS.has(l);
+}
+
+// Returns { fires: bool, weakLabel: string|null }
+function wrongCheckWarning(receipts) {
+  const passing = receipts.filter((r) => Number(r.exit_code) === 0);
+  if (passing.length === 0) return { fires: false, weakLabel: null };
+  const hasStrongPassing = passing.some((r) => isStrongLabel(r.label));
+  if (hasStrongPassing) return { fires: false, weakLabel: null };
+  // All passing receipts are WEAK — find most recent passing weak label
+  const weakLabel = passing[0].label || null;
+  return { fires: true, weakLabel };
+}
+
 function printHelp() {
   process.stdout.write(`agent-done-or-not
 
 Usage:
-  agent-done-or-not init [--dry-run] [--yes] [--claude-hook] [--label name --command "cmd"]
-  agent-done-or-not report [--format markdown|html|json]
+  agent-done-or-not init [--dry-run] [--yes] [--claude-hook] [--claude] [--policy] [--label name --command "cmd"]
+  agent-done-or-not report [--format markdown|html|json|pr]
   agent-done-or-not capture --label check -- <command>
   agent-done-or-not assert [--label check] [--ttl seconds]
 
@@ -192,9 +218,44 @@ function writeClaudeHook(cwd, dryRun, touched) {
   }
 }
 
+// Escape a literal string for use as a regex pattern (no literal double-quote allowed)
+function regexEscape(str) {
+  return str.replace(/[.\\*+?()\[\]{}^$|]/g, '\\$&');
+}
+
+function writePolicyFile(cwd, checks, dryRun, touched) {
+  const policyPath = path.join(cwd, 'agent-done.json');
+  if (fileExists(policyPath)) {
+    process.stdout.write('(agent-done.json exists, skipped)\n');
+    return null;
+  }
+  const required = checks
+    .filter((c) => c.command && c.command !== '<your verifying command>')
+    .map((c) => ({
+      label: c.label,
+      command_regex: regexEscape(c.command),
+    }));
+  if (required.length === 0) {
+    required.push({ label: checks[0].label });
+  }
+  const policy = {
+    $schema: 'https://github.com/mohamedzhioua/agent-done-or-not/policy.schema.json',
+    required,
+    ttl: 3600,
+  };
+  const relPath = path.relative(cwd, policyPath) || 'agent-done.json';
+  touched.push(relPath);
+  if (!dryRun) {
+    fs.writeFileSync(policyPath, JSON.stringify(policy, null, 2) + '\n');
+  }
+  return relPath;
+}
+
 function runInit() {
   const dryRun = args.includes('--dry-run');
-  const claudeHook = args.includes('--claude-hook');
+  // Accept both --claude-hook and --claude as aliases
+  const claudeHook = args.includes('--claude-hook') || args.includes('--claude');
+  const writePolicy = args.includes('--policy');
   const cwd = process.cwd();
   const checks = detectChecks(cwd);
   const targets = ['AGENTS.md', 'CLAUDE.md', '.cursorrules', '.windsurfrules', '.clinerules']
@@ -207,8 +268,14 @@ function runInit() {
   for (const target of targets) patchInstructionFile(target, block, dryRun, touched);
   if (claudeHook) writeClaudeHook(cwd, dryRun, touched);
 
+  let policyRelPath = null;
+  if (writePolicy) {
+    policyRelPath = writePolicyFile(cwd, checks, dryRun, touched);
+  }
+
   const first = checks[0];
-  process.stdout.write(`${dryRun ? 'Would update' : 'Updated'}: ${touched.length ? touched.join(', ') : '(nothing)'}\n`);
+  const touchedDisplay = touched.length ? touched.join(', ') : '(nothing)';
+  process.stdout.write(`${dryRun ? 'Would update' : 'Updated'}: ${touchedDisplay}\n`);
   process.stdout.write(`Next capture command:\n  npx agent-done-or-not capture --label ${first.label} -- ${first.command}\n`);
   if (!claudeHook) process.stdout.write('Add --claude-hook to generate a Claude Code Stop hook config.\n');
 }
@@ -216,10 +283,15 @@ function runInit() {
 // Receipt fields (notably `command` and `label`) are agent-controlled, so they
 // must be neutralized before rendering into a markdown table or HTML.
 function mdCell(value) {
+  // Receipt `command`/`label` are agent-controlled. Besides table-breaking
+  // characters, neutralize `<`/`>` so a crafted command can't inject the
+  // `<!-- agent-done-or-not:proof -->` sticky-comment marker into report output.
   return String(value == null ? '' : value)
     .replace(/\\/g, '\\\\')
     .replace(/\|/g, '\\|')
     .replace(/`/g, '\\`')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
     .replace(/\r?\n/g, ' ');
 }
 
@@ -235,6 +307,19 @@ function gitValue(argsForGit) {
   const result = spawnSync('git', argsForGit, { cwd: process.cwd(), encoding: 'utf8' });
   if (result.status !== 0) return null;
   return String(result.stdout || '').trim();
+}
+
+// Relative age helper: "just now" / "Nm ago" / "Nh ago" / "Nd ago"
+function agoText(epoch) {
+  if (!epoch) return 'unknown';
+  const secs = Math.floor(Date.now() / 1000) - Number(epoch);
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 function listLedgerFiles(dir) {
@@ -275,6 +360,15 @@ function reportState(receipts) {
   return 'local-only';
 }
 
+// State → glyph + WORD mapping for the card
+const STATE_DISPLAY = {
+  'local-only': { glyph: '✅', word: 'PASS' },
+  'failed':     { glyph: '❌', word: 'FAILED' },
+  'stale':      { glyph: '⚠️',  word: 'STALE' },
+  'missing':    { glyph: '⛔', word: 'NO PROOF' },
+  'bypassed':   { glyph: '🔓', word: 'BYPASSED' },
+};
+
 function runReport() {
   let format = 'markdown';
   const formatIndex = args.indexOf('--format');
@@ -296,23 +390,19 @@ function runReport() {
     return;
   }
 
+  // Build the existing table (shared by markdown + pr)
   const top = receipts.slice(0, 10);
   const rows = top.map((r) =>
     `| ${mdCell(r.label)} | ${mdCell(r.exit_code)} | ${mdCell(r.sha256)} | ${mdCell(r.command)} | ${mdCell(r.ledger)} |`
   );
-  const markdown = [
-    '# Proof Report',
-    '',
-    `State: **${state}**`,
-    `Commit: ${commit || 'unknown'}`,
-    `Dirty tree: ${payload.dirty === null ? 'unknown' : payload.dirty ? 'yes' : 'no'}`,
-    `Bypass: ${payload.bypass ? 'yes' : 'no'}`,
-    '',
+  const existingTable = [
     '| Label | Exit | SHA-256 | Command | Ledger |',
     '|---|---:|---|---|---|',
     ...(rows.length ? rows : ['| - | - | - | no receipts found | - |']),
-    ''
   ].join('\n');
+
+  const dirtyLabel = dirty === null ? 'unknown' : (dirty.length > 0 ? 'dirty' : 'clean');
+  const commitStr = commit ? `${commit} (${dirtyLabel})` : `unknown (${dirtyLabel})`;
 
   if (format === 'html') {
     const cells = top.map((r) =>
@@ -323,7 +413,7 @@ function runReport() {
       '<h1>Proof Report</h1>',
       `<p>State: <strong>${htmlCell(state)}</strong></p>`,
       `<p>Commit: ${htmlCell(commit || 'unknown')}</p>`,
-      `<p>Dirty tree: ${payload.dirty === null ? 'unknown' : payload.dirty ? 'yes' : 'no'}</p>`,
+      `<p>Dirty tree: ${dirty === null ? 'unknown' : dirty.length > 0 ? 'yes' : 'no'}</p>`,
       `<p>Bypass: ${payload.bypass ? 'yes' : 'no'}</p>`,
       '<table>',
       '  <thead><tr><th>Label</th><th>Exit</th><th>SHA-256</th><th>Command</th><th>Ledger</th></tr></thead>',
@@ -336,11 +426,119 @@ function runReport() {
     process.stdout.write(html);
     return;
   }
+
+  if (format === 'pr') {
+    const display = STATE_DISPLAY[state] || { glyph: '⛔', word: 'NO PROOF' };
+    const isPassing = state === 'local-only';
+    const headingGlyph = isPassing ? '✅' : (state === 'missing' ? '⛔' : '❌');
+    const warning = wrongCheckWarning(receipts);
+
+    // Most-recent receipt info
+    const latest = receipts[0];
+    const latestStr = latest
+      ? `\`${mdCell(latest.command)}\` · exit ${latest.exit_code} · ${agoText(latest.epoch)}`
+      : '—';
+
+    const lines = [
+      '<!-- agent-done-or-not:proof -->',
+      `### ${headingGlyph} Proof of Done`,
+      '',
+      '| | |',
+      '|---|---|',
+      `| **Status** | ${display.word} |`,
+      `| **Commit** | \`${commit || 'unknown'}\` (${dirtyLabel}) |`,
+      `| **Latest** | ${latestStr} |`,
+      '',
+      '**Checks** (most recent 10)',
+    ];
+
+    for (const r of top) {
+      const icon = Number(r.exit_code) === 0 ? '✅' : '❌';
+      const sha12 = r.sha256 ? r.sha256.slice(0, 12) : '';
+      const shaStr = sha12 ? ` — \`sha256:${sha12}…\`` : '';
+      lines.push(`- ${icon} \`${mdCell(r.label)}\` — \`${mdCell(r.command)}\` — exit \`${r.exit_code}\` — ${agoText(r.epoch)}${shaStr}`);
+    }
+    if (top.length === 0) {
+      lines.push('- *(no receipts found)*');
+    }
+
+    lines.push('');
+
+    if (warning.fires) {
+      lines.push(`> ⚠️ latest proof is ${warning.weakLabel}-only — this may not verify the requested behavior`);
+      lines.push('');
+    }
+
+    if (isPassing) {
+      lines.push('> This completion is backed by a fresh passing receipt.');
+    } else {
+      // Remediation block
+      const remLabel = latest ? mdCell(latest.label) : 'test';
+      const remCmd = latest ? mdCell(latest.command) : 'npm test';
+      // A fenced block nested inside a blockquote does not render as code on
+      // GitHub, so keep the fence outside the quote (still within the markers).
+      lines.push('> No fresh passing receipt. Run:');
+      lines.push('');
+      lines.push('```');
+      lines.push(`npx agent-done-or-not capture --label ${remLabel} -- ${remCmd}`);
+      lines.push('```');
+    }
+
+    lines.push('<!-- agent-done-or-not:proof -->');
+    lines.push('');
+
+    process.stdout.write(lines.join('\n'));
+    return;
+  }
+
   if (format !== 'markdown') {
-    process.stderr.write('agent-done-or-not: --format must be markdown, html, or json\n');
+    process.stderr.write('agent-done-or-not: --format must be markdown, html, json, or pr\n');
     process.exit(2);
   }
-  process.stdout.write(markdown);
+
+  // markdown: prepend card above existing table
+  const display = STATE_DISPLAY[state] || { glyph: '⛔', word: 'NO PROOF' };
+  const latest = receipts[0];
+  const warning = wrongCheckWarning(receipts);
+
+  const cardLines = [
+    '# Proof of Done',
+    '',
+    `Status: ${display.glyph} ${display.word}`,
+  ];
+
+  if (latest) {
+    cardLines.push(`Check: \`${mdCell(latest.command)}\``);
+    cardLines.push(`Exit: ${latest.exit_code}`);
+    cardLines.push(`Ran: ${agoText(latest.epoch)}`);
+    const sha12 = latest.sha256 ? latest.sha256.slice(0, 12) : '';
+    cardLines.push(`Output hash: \`${sha12}…\``);
+  }
+  cardLines.push(`Commit: ${commitStr}`);
+  cardLines.push('');
+
+  if (state === 'local-only') {
+    cardLines.push('This completion is backed by a fresh passing receipt.');
+  }
+  if (warning.fires) {
+    cardLines.push(`> ⚠️ latest proof is ${warning.weakLabel}-only — this may not verify the requested behavior`);
+  }
+
+  // Existing table (legacy markdown report)
+  const legacyTable = [
+    '# Proof Report',
+    '',
+    `State: **${state}**`,
+    `Commit: ${commit || 'unknown'}`,
+    `Dirty tree: ${dirty === null ? 'unknown' : dirty.length > 0 ? 'yes' : 'no'}`,
+    `Bypass: ${payload.bypass ? 'yes' : 'no'}`,
+    '',
+    existingTable,
+    '',
+  ].join('\n');
+
+  const output = cardLines.join('\n') + '\n\n' + legacyTable;
+  process.stdout.write(output);
 }
 
 if (args.length === 0 || args[0] === '--help' || args[0] === '-h' || args[0] === 'help') {

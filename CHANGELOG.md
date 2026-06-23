@@ -6,6 +6,50 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-06-23
+
+The trust-layer release. v0.7.0 made the evidence *visible*; v0.8.0 lets a
+maintainer define **what counts as done** and makes a completion claim
+**shareable** — turning "a check passed" into "the *required* checks passed."
+
+### Added
+- **Required-checks policy** — an optional `agent-done.json` at the repo root
+  declares the labels a green gate requires, each with an optional
+  `command_regex`, plus a `ttl`:
+  ```json
+  { "required": [ { "label": "test", "command_regex": "(npm|pnpm) test" },
+                  { "label": "build" } ], "ttl": 3600 }
+  ```
+  `done-gate.sh assert` (and the PowerShell port) read it automatically when no
+  explicit `--label` is given. A label is satisfied only by a fresh, passing
+  receipt whose recorded command matches its regex — so `true`/`echo ok` can no
+  longer satisfy a `test` requirement. Resolution order is explicit `--label`
+  (legacy) → policy file → most-recent receipt. New flags: `--policy <file>`
+  and `--no-policy`. Policy mode searches **all** run dirs per label, so checks
+  captured in separate runs still count. `assert --json` gains a `policy` key.
+  Described by the new [`policy.schema.json`](policy.schema.json).
+- **Wrong-check detection** — a label taxonomy (strong: test/build/typecheck/
+  e2e/smoke/…; weak: lint/format/style/manual/docs). When the only passing
+  evidence is a weak check, `assert` and `report` emit an advisory
+  `latest proof is lint-only — this may not verify the requested behavior`
+  warning. Advisory only: it never changes an exit code.
+- **`report --format pr`** — a sticky, paste-ready GitHub-comment summary
+  (✅/❌ status, commit, per-check bullets with command + age + sha) wrapped in
+  `<!-- agent-done-or-not:proof -->` markers so it can be updated in place.
+- **Human report card** — `report` (markdown) now leads with a `Proof of Done`
+  card (status glyph, latest command, exit, relative age, output hash, commit)
+  above the existing table.
+- **Action PR comment** — the GitHub Action gains `pr-comment` and
+  `github-token` inputs; on a pull request it upserts the sticky proof comment
+  via `gh api`, without changing the job's pass/fail (assert still decides).
+- **`init` polish** — `--claude` is now an alias for `--claude-hook`, and
+  `--policy` scaffolds an `agent-done.json` from detected checks (never
+  overwriting an existing one).
+
+### Changed
+- `assert --json` output now includes a top-level `policy` field (empty string
+  in legacy/`--label` modes). All existing keys are unchanged.
+
 ## [0.7.0] — 2026-06-23
 
 Adds a 60-second onboarding flow and an inspectable proof report, plus a
