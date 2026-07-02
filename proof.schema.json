@@ -40,6 +40,18 @@
     "session": {
       "type": "string",
       "description": "Agent session id when the harness exports AGENT_DONE_SESSION; empty otherwise."
+    },
+    "commit": {
+      "type": "string",
+      "description": "Full 40-char git HEAD SHA at capture time (empty outside a git repo). Binds the receipt to the source it verified, so the gate can detect a proof captured against different code."
+    },
+    "tree": {
+      "type": "string",
+      "description": "Git tree SHA of HEAD (git rev-parse HEAD^{tree}) at capture time; empty outside a git repo."
+    },
+    "dirty": {
+      "type": "boolean",
+      "description": "Whether the working tree had uncommitted changes (git status --porcelain non-empty) at capture time."
     }
   }
 }

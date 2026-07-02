@@ -168,6 +168,55 @@ if [ "$ttl" -gt 0 ] 2>/dev/null; then
   fi
 fi
 
+# --- required-checks policy: the Stop gate must be as strict as `assert` -------
+# If a policy file exists, a single fresh passing receipt of ANY label is NOT
+# enough — EVERY required label must have a fresh passing receipt. Policy logic
+# lives in done-gate.sh assert (single source of truth); we delegate to it and
+# FAIL CLOSED if a policy is present but cannot be evaluated.
+policy_file=""
+if [ -n "${AGENT_DONE_POLICY:-}" ]; then
+  policy_file="$AGENT_DONE_POLICY"
+elif [ -f "$root/agent-done.json" ]; then
+  policy_file="$root/agent-done.json"
+fi
+if [ -n "$policy_file" ] && [ -f "$policy_file" ]; then
+  gate="$(cd "$(dirname "$0")" && pwd)/done-gate.sh"
+  if [ ! -f "$gate" ]; then
+    deny "policy $policy_file present but done-gate.sh is not next to stop-gate.sh — cannot verify required checks"
+  fi
+  if ! AGENT_DONE_DIR="$proof_dir" AGENT_DONE_TTL="$ttl" bash "$gate" assert --policy "$policy_file" >/dev/null 2>&1; then
+    deny "required checks in $(basename "$policy_file") are not all fresh & passing — run every required check, then finish"
+  fi
+fi
+
+# --- state binding: a passing receipt captured against different code is stale -
+# Advisory by default; set AGENT_DONE_BIND_STATE=1 to make drift a hard block.
+# Uses the receipt's RECORDED commit/dirty (not a fresh `git status`), so a proof
+# legitimately captured against a dirty tree is not re-flagged — only a new commit
+# or edits after a CLEAN capture count as drift. In hard mode a receipt with no
+# commit binding is itself drift (it cannot be proven fresh against the source).
+bind_state="${AGENT_DONE_BIND_STATE:-0}"
+rec_commit="$(printf '%s' "$last_line" | grep -oE '"commit":"[0-9a-f]*"' | head -n1 | sed -E 's/.*"([0-9a-f]*)".*/\1/' || true)"
+rec_dirty="$(printf '%s' "$last_line" | grep -oE '"dirty":(true|false)' | head -n1 | sed -E 's/.*:(true|false)/\1/' || true)"
+head_commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$head_commit" ]; then
+  drift=""
+  if [ -z "$rec_commit" ]; then
+    [ "$bind_state" = "1" ] && drift="receipt has no commit binding (captured before state binding or outside git)"
+  elif [ "$rec_commit" != "$head_commit" ]; then
+    drift="proof captured at $(printf '%s' "$rec_commit" | cut -c1-7) but HEAD is now $(printf '%s' "$head_commit" | cut -c1-7)"
+  elif [ "$rec_dirty" = "false" ] && [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then
+    drift="working tree changed since the (clean) proof was captured"
+  fi
+  if [ -n "$drift" ]; then
+    if [ "$bind_state" = "1" ]; then
+      deny "$drift (AGENT_DONE_BIND_STATE=1) — re-run your check against the current code"
+    else
+      printf 'stop-gate: WARNING — %s — proof may not reflect the current code\n' "$drift" >&2
+    fi
+  fi
+fi
+
 # --- consume-on-allow: require a NEW passing receipt since the last stop -------
 # Identify "newness" by run id + receipt count, NOT by the output hash: two
 # passing checks with identical output (e.g. a deterministic "5 passed") would

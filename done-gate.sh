@@ -67,6 +67,14 @@ timestamp() { date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf 'unknown'; }
 epoch()     { date +%s 2>/dev/null || printf '0'; }
 run_stamp() { date -u +%Y%m%dT%H%M%SZ 2>/dev/null || printf 'run'; }
 
+# Git state at capture time, so a receipt is bound to the source it verified.
+# Emits three TAB-separated fields: <commit>\t<tree>\t<dirty>. commit/tree are
+# empty outside a git repo; dirty is the JSON literal true/false. This is what
+# lets the gate later say "this proof was captured against different code."
+git_commit() { git rev-parse HEAD 2>/dev/null || printf ''; }
+git_tree()   { git rev-parse 'HEAD^{tree}' 2>/dev/null || printf ''; }
+git_dirty()  { [ -n "$(git status --porcelain 2>/dev/null)" ] && printf 'true' || printf 'false'; }
+
 sha256_of_file() {
   local f="$1" c py=""
   if command -v sha256sum >/dev/null 2>&1; then
@@ -104,6 +112,36 @@ rec_exit()    { printf '%s' "$1" | grep -oE '"exit_code":[0-9]+' | head -n1 | gr
 rec_epoch()   { printf '%s' "$1" | grep -oE '"epoch":[0-9]+' | head -n1 | grep -oE '[0-9]+'; }
 rec_sha()     { printf '%s' "$1" | grep -oE '"sha256":"[0-9a-f]+"' | head -n1 | sed -E 's/.*"([0-9a-f]+)".*/\1/'; }
 rec_command() { printf '%s' "$1" | sed -E 's/.*"command":"(.*)","exit_code":.*/\1/'; }
+rec_commit()  { printf '%s' "$1" | grep -oE '"commit":"[0-9a-f]*"' | head -n1 | sed -E 's/.*"([0-9a-f]*)".*/\1/'; }
+rec_dirty()   { printf '%s' "$1" | grep -oE '"dirty":(true|false)' | head -n1 | sed -E 's/.*:(true|false)/\1/'; }
+
+# Compare a receipt's RECORDED git state to the working tree NOW. Echoes a short
+# human reason if the proof no longer matches the code, else nothing. It uses the
+# receipt's own recorded commit/dirty (not a fresh `git status`) so a proof that
+# was legitimately captured against a dirty tree is NOT re-flagged as drift — only
+# a real change is: a new commit, or edits after a CLEAN capture. Outside a git
+# repo it is silent. $2 = bind flag: in hard mode a receipt with no commit
+# binding is itself drift (it can't be proven fresh); in advisory mode it's silent
+# so pre-binding receipts don't nag.
+state_drift_reason() {
+  local line="$1" bind="${2:-0}" rcommit rdirty head
+  rcommit="$(rec_commit "$line" || true)"
+  rdirty="$(rec_dirty "$line" || true)"
+  head="$(git_commit)"
+  [ -n "$head" ] || return 0
+  if [ -z "$rcommit" ]; then
+    [ "$bind" = "1" ] && printf 'receipt has no commit binding (captured before state binding or outside git)'
+    return 0
+  fi
+  if [ "$rcommit" != "$head" ]; then
+    printf 'proof captured at %s but HEAD is now %s' "$(printf '%s' "$rcommit" | cut -c1-7)" "$(printf '%s' "$head" | cut -c1-7)"
+    return 0
+  fi
+  if [ "$rdirty" = "false" ] && [ "$(git_dirty)" = "true" ]; then
+    printf 'working tree changed since the (clean) proof was captured'
+  fi
+  return 0
+}
 
 # Latest receipt line for a label (fixed-string match), or empty.
 latest_for_label() {
@@ -198,11 +236,13 @@ cmd_capture() {
   set -e
 
   local sha; sha="$(sha256_of_file "$log")"
+  local commit tree dirty
+  commit="$(git_commit)"; tree="$(git_tree)"; dirty="$(git_dirty)"
   local receipt
-  receipt="$(printf '{"label":"%s","command":"%s","exit_code":%s,"sha256":"%s","log":"%s","at":"%s","epoch":%s,"session":"%s"}' \
+  receipt="$(printf '{"label":"%s","command":"%s","exit_code":%s,"sha256":"%s","log":"%s","at":"%s","epoch":%s,"session":"%s","commit":"%s","tree":"%s","dirty":%s}' \
     "$(json_escape "$label")" "$(json_escape "${CMD[*]}")" "$rc" "$sha" \
     "$(json_escape "${log#"$ROOT/"}")" "$(timestamp)" "$(epoch)" \
-    "$(json_escape "${AGENT_DONE_SESSION:-}")")"
+    "$(json_escape "${AGENT_DONE_SESSION:-}")" "$(json_escape "$commit")" "$(json_escape "$tree")" "$dirty")"
   printf '%s\n' "$receipt" >> "$dir/ledger.jsonl"
 
   printf '%s\n' "$run" > "$PROOF_DIR/latest.$$.tmp" && mv -f "$PROOF_DIR/latest.$$.tmp" "$PROOF_DIR/latest"
@@ -300,12 +340,13 @@ EOF
   fi
 
   local now; now="$(epoch)"
+  local bind_state="${AGENT_DONE_BIND_STATE:-0}"
   local overall=0 checks="" first=1 idx=0 lbl lrx line ec ep sha cmd fresh cmd_ok line_ok
-  local any_pass=0 weak_only=1 warn_label=""
+  local any_pass=0 weak_only=1 warn_label="" drift="" drift_warn=""
   for lbl in "${LABELS[@]}"; do
     lrx="${LABEL_REGEXES[$idx]:-}"; idx=$((idx + 1))
     if [ "$policy_mode" = "1" ]; then line="$(latest_for_label_global "$lbl")"; else line="$(latest_for_label "$ledger" "$lbl")"; fi
-    ec=""; ep=""; sha=""; cmd=""; fresh="false"; cmd_ok="true"; line_ok="false"
+    ec=""; ep=""; sha=""; cmd=""; fresh="false"; cmd_ok="true"; line_ok="false"; drift=""
     if [ -n "$line" ]; then
       ec="$(rec_exit "$line" || true)"; ep="$(rec_epoch "$line" || true)"
       sha="$(rec_sha "$line" || true)"; cmd="$(rec_command "$line" || true)"
@@ -315,6 +356,14 @@ EOF
         if printf '%s' "$cmd" | grep -Eq "$lrx" 2>/dev/null; then cmd_ok="true"; else cmd_ok="false"; fi
       fi
       if [ "$ec" = "0" ] && [ "$fresh" = "true" ] && [ "$cmd_ok" = "true" ]; then line_ok="true"; fi
+      # State binding: a passing receipt captured against different code is stale.
+      if [ "$line_ok" = "true" ]; then
+        drift="$(state_drift_reason "$line" "$bind_state" || true)"
+        if [ -n "$drift" ]; then
+          [ -n "$drift_warn" ] || drift_warn="$drift"
+          if [ "$bind_state" = "1" ]; then line_ok="false"; fi
+        fi
+      fi
     fi
     [ "$line_ok" = "true" ] || overall=1
 
@@ -327,7 +376,7 @@ EOF
     if [ "$json" = "1" ]; then
       [ "$first" = "1" ] || checks="$checks,"
       first=0
-      checks="$checks{\"label\":\"$(json_escape "$lbl")\",\"found\":$([ -n "$line" ] && echo true || echo false),\"exit_code\":${ec:-null},\"fresh\":$fresh,\"command_allowed\":$cmd_ok,\"sha256\":\"$(json_escape "${sha:-}")\",\"ok\":$line_ok}"
+      checks="$checks{\"label\":\"$(json_escape "$lbl")\",\"found\":$([ -n "$line" ] && echo true || echo false),\"exit_code\":${ec:-null},\"fresh\":$fresh,\"command_allowed\":$cmd_ok,\"sha256\":\"$(json_escape "${sha:-}")\",\"drift\":\"$(json_escape "${drift:-}")\",\"ok\":$line_ok}"
     else
       if [ "$line_ok" = "true" ]; then
         printf 'done-gate: assert OK   label=%s exit=%s fresh=%s\n' "$lbl" "${ec:-?}" "$fresh" >&2
@@ -339,10 +388,19 @@ EOF
   done
 
   if [ "$json" = "1" ]; then
-    printf '{"ok":%s,"run":"%s","ttl":%s,"policy":"%s","checks":[%s]}\n' \
-      "$([ "$overall" = "0" ] && echo true || echo false)" "$(json_escape "$run_label")" "$ttl" "$(json_escape "$policy_used")" "$checks"
-  elif [ "$any_pass" = "1" ] && [ "$weak_only" = "1" ]; then
-    printf 'done-gate: WARNING — latest proof is %s-only — this may not verify the requested behavior\n' "$warn_label" >&2
+    printf '{"ok":%s,"run":"%s","ttl":%s,"policy":"%s","state_drift":"%s","checks":[%s]}\n' \
+      "$([ "$overall" = "0" ] && echo true || echo false)" "$(json_escape "$run_label")" "$ttl" "$(json_escape "$policy_used")" "$(json_escape "${drift_warn:-}")" "$checks"
+  else
+    if [ -n "$drift_warn" ]; then
+      if [ "$bind_state" = "1" ]; then
+        printf 'done-gate: assert FAIL — %s (AGENT_DONE_BIND_STATE=1)\n' "$drift_warn" >&2
+      else
+        printf 'done-gate: WARNING — %s — re-run your check\n' "$drift_warn" >&2
+      fi
+    fi
+    if [ "$any_pass" = "1" ] && [ "$weak_only" = "1" ]; then
+      printf 'done-gate: WARNING — latest proof is %s-only — this may not verify the requested behavior\n' "$warn_label" >&2
+    fi
   fi
   return "$overall"
 }

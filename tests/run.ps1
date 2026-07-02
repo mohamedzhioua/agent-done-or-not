@@ -138,6 +138,38 @@ function FailingCommand {
     return @('pwsh', '-NoProfile', '-Command', 'exit 9')
 }
 
+# Git-backed sandbox for state-binding tests. Native git writes to stderr under
+# some conditions; EAP=Continue keeps WinPS 5.1 from turning that into a throw.
+function New-GitSandbox {
+    $d = New-Sandbox
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        Push-Location $d
+        & git init -q 2>&1 | Out-Null
+        & git config user.email 't@t' 2>&1 | Out-Null
+        & git config user.name 't' 2>&1 | Out-Null
+        & git commit -q --allow-empty -m init 2>&1 | Out-Null
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = $old
+    }
+    return $d
+}
+
+function Add-GitCommit {
+    param([string]$Dir)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        Push-Location $Dir
+        & git commit -q --allow-empty -m next 2>&1 | Out-Null
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = $old
+    }
+}
+
 Write-Output '== done-gate.ps1 =='
 
 $d = New-Sandbox
@@ -344,7 +376,7 @@ $r2 = Invoke-Gate $d (@('capture', '--label', 'build', '--run', 'run2', '--') + 
 $a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
 if ($a.ExitCode -eq 1) { Ok 'policy assert fails when a required label has a failing receipt' } else { Bad "policy failed-receipt (exit $($a.ExitCode))" }
 
-# 4. Per-label command_regex from policy — right command passes, wrong fails
+# 4. Per-label command_regex from policy - right command passes, wrong fails
 $d = New-Sandbox
 $policy = Write-Policy $d '{"required":[{"label":"test","command_regex":"^pwsh"}],"ttl":3600}'
 $proof = Join-Path $d '.proof'
@@ -361,7 +393,7 @@ $r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (
 $a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
 if ($a.ExitCode -eq 1) { Ok 'policy per-label command_regex fails for non-matching command' } else { Bad "policy regex-fail (exit $($a.ExitCode))" }
 
-# 5. Policy ttl honored — stale receipt fails
+# 5. Policy ttl honored - stale receipt fails
 $d = New-Sandbox
 $policy = Write-Policy $d '{"required":[{"label":"test"}],"ttl":1}'
 $proof = Join-Path $d '.proof'
@@ -379,7 +411,7 @@ if ($a.ExitCode -eq 1) { Ok 'policy ttl honored (stale receipt rejected)' } else
 $d = New-Sandbox
 $policy = Write-Policy $d '{"required":[{"label":"test"},{"label":"build"}],"ttl":3600}'
 $proof = Join-Path $d '.proof'
-# Only capture 'test'; policy would require 'build' too — but --no-policy ignores policy
+# Only capture 'test'; policy would require 'build' too - but --no-policy ignores policy
 $r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
 $a = Invoke-Gate $d @('assert', '--no-policy') $proof
 # Legacy mode: asserts the latest receipt (test), which passes
@@ -460,6 +492,78 @@ $d = New-Sandbox
 $r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand))
 $a = Invoke-Gate $d @('assert', '--label', 'test', '--ttl', 'abc') $r1.ProofDir
 if ($a.ExitCode -eq 2) { Ok 'assert --ttl non-integer fails with exit 2' } else { Bad "ttl integer validation (exit $($a.ExitCode))" }
+
+Write-Output '== state binding (v0.9) =='
+
+# 14. capture binds the receipt to git commit + tree + dirty.
+$d = New-GitSandbox
+$r = Invoke-Gate $d (@('capture', '--label', 't', '--') + (PassingCommand))
+$receipt = Latest-Receipt $r.ProofDir
+if ($receipt.commit -match '^[0-9a-f]{40}$' -and $receipt.tree -match '^[0-9a-f]{40}$' `
+        -and ($receipt.PSObject.Properties.Name -contains 'dirty')) {
+    Ok 'capture binds the receipt to commit + tree + dirty'
+} else {
+    Bad 'state binding: receipt missing commit/tree/dirty'
+}
+
+# 15. assert warns on state drift (HEAD advanced) but still exits 0 (advisory).
+$d = New-GitSandbox
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--') + (PassingCommand))
+Add-GitCommit $d
+$a = Invoke-Gate $d @('assert', '--label', 'test') $r1.ProofDir
+if ($a.ExitCode -eq 0 -and $a.Stderr -match 'HEAD is now') {
+    Ok 'assert warns on state drift (advisory) but exits 0'
+} else {
+    Bad "assert drift advisory (exit $($a.ExitCode))"
+}
+
+# 16. AGENT_DONE_BIND_STATE=1 turns state drift into a hard assert failure.
+$d = New-GitSandbox
+$r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--') + (PassingCommand))
+Add-GitCommit $d
+$oldBind = $env:AGENT_DONE_BIND_STATE
+$env:AGENT_DONE_BIND_STATE = '1'
+try {
+    $a = Invoke-Gate $d @('assert', '--label', 'test') $r1.ProofDir
+} finally {
+    $env:AGENT_DONE_BIND_STATE = $oldBind
+}
+if ($a.ExitCode -eq 1) { Ok 'AGENT_DONE_BIND_STATE=1 fails assert on drift' } else { Bad "bind-state assert (exit $($a.ExitCode))" }
+
+Write-Output '== stop-gate.ps1 policy + drift (v0.9) =='
+
+$sgPayload = '{"session_id":"s1","stop_hook_active":false}'
+
+# S4. policy-aware: a passing receipt for a NON-required label must not clear the gate.
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+Write-Policy $d '{"required":[{"label":"test"},{"label":"build"}]}' | Out-Null
+$null = Invoke-Gate $d (@('capture', '--label', 'lint', '--') + (PassingCommand)) $proof
+$s = Invoke-StopGate $d $proof $sgPayload
+if ($s.ExitCode -eq 2) { Ok 'stop-gate blocks when a policy label lacks a passing receipt' } else { Bad "stop-gate policy block (got $($s.ExitCode))" }
+
+# S5. policy-aware: allows once every required label has a fresh passing receipt.
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+Write-Policy $d '{"required":[{"label":"test"},{"label":"build"}]}' | Out-Null
+$null = Invoke-Gate $d (@('capture', '--label', 'test', '--') + (PassingCommand)) $proof
+$null = Invoke-Gate $d (@('capture', '--label', 'build', '--') + (PassingCommand)) $proof
+$s = Invoke-StopGate $d $proof $sgPayload
+if ($s.ExitCode -eq 0) { Ok 'stop-gate allows when all policy labels are satisfied' } else { Bad "stop-gate policy allow (got $($s.ExitCode))" }
+
+# S6. drift blocks under AGENT_DONE_BIND_STATE=1 (HEAD advanced after capture).
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+$null = Invoke-Gate $d (@('capture', '--label', 't', '--') + (PassingCommand)) $proof
+Add-GitCommit $d
+$oldBind = $env:AGENT_DONE_BIND_STATE
+$env:AGENT_DONE_BIND_STATE = '1'
+try {
+    $s = Invoke-StopGate $d $proof $sgPayload
+} finally {
+    if ($null -eq $oldBind) { Remove-Item Env:AGENT_DONE_BIND_STATE -ErrorAction SilentlyContinue } else { $env:AGENT_DONE_BIND_STATE = $oldBind }
+}
+if ($s.ExitCode -eq 2) { Ok 'stop-gate blocks on drift when AGENT_DONE_BIND_STATE=1' } else { Bad "stop-gate drift bindstate (got $($s.ExitCode))" }
 
 Write-Output ''
 Write-Output ("Result: {0} passed, {1} failed" -f $pass, $fail)

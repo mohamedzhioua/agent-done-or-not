@@ -41,6 +41,21 @@ function Get-Root {
     return $pwdPath
 }
 
+# Git state at capture time, so a receipt is bound to the source it verified.
+# Empty commit/tree outside a git repo; dirty is the JSON literal true/false.
+function Get-GitCommit {
+    try { $v = (& git rev-parse HEAD 2>$null); if ($LASTEXITCODE -eq 0 -and $v) { return ([string]$v).Trim() } } catch {}
+    return ''
+}
+function Get-GitTree {
+    try { $v = (& git rev-parse 'HEAD^{tree}' 2>$null); if ($LASTEXITCODE -eq 0 -and $v) { return ([string]$v).Trim() } } catch {}
+    return ''
+}
+function Get-GitDirty {
+    try { $v = (& git status --porcelain 2>$null); if ($LASTEXITCODE -eq 0 -and $v) { return 'true' } } catch {}
+    return 'false'
+}
+
 function Test-ValidName {
     param([string]$Name)
     if ([string]::IsNullOrEmpty($Name)) { return $false }
@@ -246,6 +261,40 @@ function Receipt-Label {
     return (Rec-Field $Line '"label":"([^"]*)"')
 }
 
+function Receipt-Commit {
+    param([string]$Line)
+    return (Rec-Field $Line '"commit":"([0-9a-f]*)"')
+}
+
+function Receipt-Dirty {
+    param([string]$Line)
+    return (Rec-Field $Line '"dirty":(true|false)')
+}
+
+# Reason a receipt no longer matches the working tree, else ''. Uses the receipt's
+# RECORDED commit/dirty (not a fresh status) so a proof captured against a dirty
+# tree is not re-flagged; only a new commit or edits after a CLEAN capture count.
+# $Bind: in hard mode, a receipt with no commit binding is itself drift.
+function Get-StateDriftReason {
+    param([string]$Line, [bool]$Bind = $false)
+    $rc = Receipt-Commit $Line
+    $rdirty = Receipt-Dirty $Line
+    $head = Get-GitCommit
+    if ([string]::IsNullOrEmpty($head)) { return '' }
+    if ([string]::IsNullOrEmpty($rc)) {
+        if ($Bind) { return 'receipt has no commit binding (captured before state binding or outside git)' }
+        return ''
+    }
+    if ($rc -ne $head) {
+        return ('proof captured at {0} but HEAD is now {1}' -f `
+            $rc.Substring(0, [Math]::Min(7, $rc.Length)), $head.Substring(0, [Math]::Min(7, $head.Length)))
+    }
+    if ($rdirty -eq 'false' -and (Get-GitDirty) -eq 'true') {
+        return 'working tree changed since the (clean) proof was captured'
+    }
+    return ''
+}
+
 function Command-Text {
     param([string[]]$Command)
     return ($Command -join ' ')
@@ -334,9 +383,13 @@ function Cmd-Capture {
     $epoch = Get-UnixEpoch $now
     $logRel = Get-RelativeLogPath $script:ROOT $log
 
-    $receipt = ('{{"label":"{0}","command":"{1}","exit_code":{2},"sha256":"{3}","log":"{4}","at":"{5}","epoch":{6},"session":"{7}"}}' -f `
+    $gitCommit = Get-GitCommit
+    $gitTree = Get-GitTree
+    $gitDirty = Get-GitDirty
+    $receipt = ('{{"label":"{0}","command":"{1}","exit_code":{2},"sha256":"{3}","log":"{4}","at":"{5}","epoch":{6},"session":"{7}","commit":"{8}","tree":"{9}","dirty":{10}}}' -f `
         (Json-Escape $label), (Json-Escape (Command-Text $cmd)), $rc, $sha, `
-        (Json-Escape $logRel), $at, $epoch, (Json-Escape $env:AGENT_DONE_SESSION))
+        (Json-Escape $logRel), $at, $epoch, (Json-Escape $env:AGENT_DONE_SESSION), `
+        (Json-Escape $gitCommit), (Json-Escape $gitTree), $gitDirty)
     Append-TextLine (Join-Path $dir 'ledger.jsonl') $receipt
 
     $tmp = Join-Path $script:PROOF_DIR ('latest.' + $PID + '.tmp')
@@ -427,12 +480,12 @@ function Cmd-Assert {
                 $entryRx = if (-not [string]::IsNullOrEmpty($entry.Regex)) { $entry.Regex } else { $regex }
                 [void]$labelRegexes.Add($entryRx)
             }
-            # Policy present but no parseable "required" entries — FAIL CLOSED
+            # Policy present but no parseable "required" entries - FAIL CLOSED
             # instead of silently degrading to latest-receipt (a policy that says
             # "do more" must never quietly do less).
             if ($labels.Count -eq 0) {
                 if ($json) { Write-Output ('{{"ok":false,"reason":"policy present but no parseable required entries","policy":"{0}","checks":[]}}' -f (Json-Escape $policyUsed)) }
-                Write-Stderr ('done-gate: assert FAIL — policy {0} present but no parseable "required" entries (check for nested braces / quoting)' -f $policyUsed)
+                Write-Stderr ('done-gate: assert FAIL - policy {0} present but no parseable "required" entries (check for nested braces / quoting)' -f $policyUsed)
                 exit 1
             }
             $policyMode = $true
@@ -460,14 +513,14 @@ function Cmd-Assert {
         $anyLedger = @(Get-ChildItem -Path $script:PROOF_DIR -Recurse -Filter 'ledger.jsonl' -ErrorAction SilentlyContinue)
         if ($anyLedger.Count -eq 0) {
             if ($json) { Write-Output ('{{"ok":false,"reason":"no proof receipts found","policy":"{0}","checks":[]}}' -f (Json-Escape $policyUsed)) }
-            Write-Stderr 'done-gate: assert FAIL — no proof receipts found (capture something first)'
+            Write-Stderr 'done-gate: assert FAIL - no proof receipts found (capture something first)'
             exit 1
         }
     } else {
         $run = Resolve-RunForRead $run $script:PROOF_DIR
         if ([string]::IsNullOrEmpty($run)) {
             if ($json) { Write-Output ('{{"ok":false,"reason":"no proof run found","policy":"{0}","checks":[]}}' -f (Json-Escape $policyUsed)) }
-            Write-Stderr 'done-gate: assert FAIL — no proof run found (capture something first)'
+            Write-Stderr 'done-gate: assert FAIL - no proof run found (capture something first)'
             exit 1
         }
         if (-not (Test-ValidName $run)) { Die 'assert: invalid run id' }
@@ -475,7 +528,7 @@ function Cmd-Assert {
         $runLabel = $run
         if (-not (Test-Path -LiteralPath $ledger)) {
             if ($json) { Write-Output ('{{"ok":false,"reason":"ledger missing","run":"{0}","policy":"{1}","checks":[]}}' -f (Json-Escape $run), (Json-Escape $policyUsed)) }
-            Write-Stderr "done-gate: assert FAIL — no ledger for run=$run"
+            Write-Stderr "done-gate: assert FAIL - no ledger for run=$run"
             exit 1
         }
 
@@ -484,7 +537,7 @@ function Cmd-Assert {
             $lines = @(Get-Content -LiteralPath $ledger | Where-Object { $_ -ne '' })
             if ($lines.Count -eq 0) {
                 if ($json) { Write-Output ('{{"ok":false,"run":"{0}","ttl":{1},"policy":"{2}","checks":[]}}' -f (Json-Escape $run), $ttlInt, (Json-Escape $policyUsed)) }
-                Write-Stderr 'done-gate: assert FAIL — empty ledger'
+                Write-Stderr 'done-gate: assert FAIL - empty ledger'
                 exit 1
             }
             $lastLabel = Receipt-Label ([string]$lines[$lines.Count - 1])
@@ -494,11 +547,13 @@ function Cmd-Assert {
     }
 
     $nowEpoch = Get-UnixEpoch ([DateTime]::UtcNow)
+    $bindState = ($env:AGENT_DONE_BIND_STATE -eq '1')
     $overall = 0
     $checks = New-Object System.Collections.ArrayList
     $anyPass = $false
     $weakOnly = $true
     $warnLabel = ''
+    $driftWarn = ''
 
     for ($idx = 0; $idx -lt $labels.Count; $idx++) {
         $label = [string]$labels[$idx]
@@ -540,6 +595,16 @@ function Cmd-Assert {
             if ($exitCode -eq '0' -and $fresh -and $commandAllowed) { $ok = $true }
         }
 
+        # State binding: a passing receipt captured against different code is stale.
+        $drift = ''
+        if ($ok) {
+            $drift = Get-StateDriftReason $line $bindState
+            if (-not [string]::IsNullOrEmpty($drift)) {
+                if ([string]::IsNullOrEmpty($driftWarn)) { $driftWarn = $drift }
+                if ($bindState) { $ok = $false }
+            }
+        }
+
         if (-not $ok) { $overall = 1 }
 
         # Advisory wrong-check bookkeeping (never affects exit code)
@@ -551,10 +616,10 @@ function Cmd-Assert {
         if ($json) {
             $exitJson = 'null'
             if ($exitCode -match '^[0-9]+$') { $exitJson = $exitCode }
-            $checkJson = ('{{"label":"{0}","found":{1},"exit_code":{2},"fresh":{3},"command_allowed":{4},"sha256":"{5}","ok":{6}}}' -f `
+            $checkJson = ('{{"label":"{0}","found":{1},"exit_code":{2},"fresh":{3},"command_allowed":{4},"sha256":"{5}","drift":"{6}","ok":{7}}}' -f `
                 (Json-Escape $label), $found.ToString().ToLowerInvariant(), $exitJson, `
                 $fresh.ToString().ToLowerInvariant(), $commandAllowed.ToString().ToLowerInvariant(), `
-                (Json-Escape $sha), $ok.ToString().ToLowerInvariant())
+                (Json-Escape $sha), (Json-Escape $drift), $ok.ToString().ToLowerInvariant())
             [void]$checks.Add($checkJson)
         } else {
             if ($ok) {
@@ -569,10 +634,19 @@ function Cmd-Assert {
 
     if ($json) {
         $okText = if ($overall -eq 0) { 'true' } else { 'false' }
-        Write-Output ('{{"ok":{0},"run":"{1}","ttl":{2},"policy":"{3}","checks":[{4}]}}' -f `
-            $okText, (Json-Escape $runLabel), $ttlInt, (Json-Escape $policyUsed), ($checks -join ','))
-    } elseif ($anyPass -and $weakOnly) {
-        Write-Stderr "done-gate: WARNING — latest proof is $warnLabel-only — this may not verify the requested behavior"
+        Write-Output ('{{"ok":{0},"run":"{1}","ttl":{2},"policy":"{3}","state_drift":"{4}","checks":[{5}]}}' -f `
+            $okText, (Json-Escape $runLabel), $ttlInt, (Json-Escape $policyUsed), (Json-Escape $driftWarn), ($checks -join ','))
+    } else {
+        if (-not [string]::IsNullOrEmpty($driftWarn)) {
+            if ($bindState) {
+                Write-Stderr "done-gate: assert FAIL - $driftWarn (AGENT_DONE_BIND_STATE=1)"
+            } else {
+                Write-Stderr "done-gate: WARNING - $driftWarn - re-run your check"
+            }
+        }
+        if ($anyPass -and $weakOnly) {
+            Write-Stderr "done-gate: WARNING - latest proof is $warnLabel-only - this may not verify the requested behavior"
+        }
     }
     exit $overall
 }
