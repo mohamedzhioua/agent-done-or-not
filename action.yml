@@ -24,7 +24,7 @@ inputs:
     required: false
     default: ""
   allow-command-regex:
-    description: Regex that the recorded command must match.
+    description: 'Regex the RECORDED command must match. Note: in mode: verify each check runs via `bash -c "<command>"`, so the recorded command is `bash -c <command>` — write the regex to allow for that prefix (it is a substring match).'
     required: false
     default: ""
   json:
@@ -137,120 +137,10 @@ runs:
         INPUT_ALLOW_COMMAND_REGEX: ${{ inputs.allow-command-regex }}
         INPUT_JSON: ${{ inputs.json }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
-      run: |
-        # NOTE: no `set -e` — we run every check, record each receipt, and decide
-        # the job status at the end from the collected exit codes.
-        set -uo pipefail
-
-        cd "$INPUT_WORKING_DIRECTORY"
-
-        if [ -z "$(printf '%s' "$INPUT_CHECKS" | tr -d '[:space:]')" ]; then
-          printf 'agent-done-or-not: mode: verify requires a non-empty "checks" input (one "label: command" per line).\n' >&2
-          exit 2
-        fi
-
-        trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
-
-        gate="$GITHUB_ACTION_PATH/done-gate.sh"
-
-        # A CI-run-scoped run id so EVERY fresh capture lands in ONE ledger that a
-        # single `assert --label ...` can read. It also makes the proof dir easy to
-        # find for the artifact + summary below.
-        export AGENT_DONE_SESSION="ci-verify-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
-
-        # Resolve the proof dir exactly as done-gate.sh does (respecting an override).
-        root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-        proof_dir="${AGENT_DONE_DIR:-$root/.agent-proof}"
-        ledger="$proof_dir/$AGENT_DONE_SESSION/ledger.jsonl"
-
-        labels=()
-        cap_status=0
-
-        # Re-run every declared check FRESH from the pinned engine. We deliberately
-        # ignore any committed .agent-proof/: `capture` appends a new receipt and
-        # `assert` reads the newest line per label, so a hand-written green receipt
-        # cannot survive a red re-run — CI overwrites it with what actually happened.
-        while IFS= read -r rawline; do
-          line="$(trim "${rawline%$'\r'}")"
-          [ -z "$line" ] && continue
-          case "$line" in
-            \#*) continue ;;
-            *:*) ;;
-            *) printf 'agent-done-or-not: bad check line (expected "label: command"): %s\n' "$line" >&2; exit 2 ;;
-          esac
-          label="$(trim "${line%%:*}")"
-          command="$(trim "${line#*:}")"
-          if [ -z "$label" ] || [ -z "$command" ]; then
-            printf 'agent-done-or-not: bad check line (expected "label: command"): %s\n' "$line" >&2
-            exit 2
-          fi
-          printf '::group::verify %s\n' "$label"
-          bash "$gate" capture --label "$label" -- bash -c "$command"
-          rc=$?
-          printf '::endgroup::\n'
-          [ "$rc" -ne 0 ] && cap_status=1
-          labels+=("$label")
-        done <<< "$INPUT_CHECKS"
-
-        if [ "${#labels[@]}" -eq 0 ]; then
-          printf 'agent-done-or-not: no runnable checks parsed from "checks" input.\n' >&2
-          exit 2
-        fi
-
-        # Now assert the FRESH receipts (exit 0 + fresh + optional command regex).
-        # We assert by EXPLICIT --label against this run only — deliberately NOT
-        # policy mode. Policy mode does a global newest-epoch search across all run
-        # dirs, so a committed receipt with a forged huge "epoch" could outrank our
-        # fresh capture and win. Explicit --label reads only this CI-scoped run's
-        # ledger, so a committed forgery can never influence the verdict.
-        args=(assert)
-        for l in "${labels[@]}"; do args+=(--label "$l"); done
-        [ -n "$INPUT_TTL" ] && args+=(--ttl "$INPUT_TTL")
-        [ -n "$INPUT_ALLOW_COMMAND_REGEX" ] && args+=(--allow-command-regex "$INPUT_ALLOW_COMMAND_REGEX")
-        [ "$INPUT_JSON" = "true" ] && args+=(--json)
-
-        output="$(bash "$gate" "${args[@]}" 2>&1)"
-        assert_status=$?
-        printf '%s\n' "$output"
-
-        status=0
-        [ "$cap_status" -ne 0 ] && status=1
-        [ "$assert_status" -ne 0 ] && status=1
-
-        commit="$(git rev-parse HEAD 2>/dev/null || printf 'unknown')"
-
-        # Publish each fresh receipt's SHA + the commit it was verified against.
-        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-          {
-            printf '## agent-done-or-not: CI-verified receipts\n\n'
-            printf -- '- mode: `verify`\n'
-            printf -- '- commit: `%s`\n' "$commit"
-            printf -- '- ref: `%s`\n' "${GITHUB_REF:-unknown}"
-            printf -- '- status: `%s`\n\n' "$status"
-            printf '| label | exit | sha256 |\n|---|---|---|\n'
-            for l in "${labels[@]}"; do
-              rline="$(grep -F "\"label\":\"$l\"" "$ledger" 2>/dev/null | tail -n1 || true)"
-              rexit="$(printf '%s' "$rline" | grep -oE '"exit_code":[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
-              rsha="$(printf '%s' "$rline" | grep -oE '"sha256":"[0-9a-f]+"' | head -n1 | sed -E 's/.*"([0-9a-f]+)".*/\1/' || true)"
-              printf '| `%s` | `%s` | `%s` |\n' "$l" "${rexit:-?}" "${rsha:-missing}"
-            done
-            printf '\n<pre>\n'
-            printf '%s\n' "$output" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
-            printf '</pre>\n'
-          } >> "$GITHUB_STEP_SUMMARY"
-        fi
-
-        # Expose the proof dir for the artifact step, and mirror the assert
-        # output/status into RUNNER_TEMP so the shared PR-comment step can post it.
-        if [ -n "${GITHUB_OUTPUT:-}" ]; then
-          printf 'proof-dir=%s\n' "$proof_dir" >> "$GITHUB_OUTPUT"
-        fi
-        if [ -n "${RUNNER_TEMP:-}" ]; then
-          printf '%s' "$output" > "$RUNNER_TEMP/agent-done-assert-output.txt"
-          printf '%s' "$status" > "$RUNNER_TEMP/agent-done-assert-status.txt"
-        fi
-
-        exit "$status"
+      # The verify flow lives in ci-verify.sh (next to done-gate.sh) so it is
+      # unit-testable instead of buried in this YAML. It re-runs each check fresh,
+      # ignores committed receipts, and exits non-zero on any red check.
+      run: bash "$GITHUB_ACTION_PATH/ci-verify.sh"
 
     - name: Upload proof receipts artifact
       if: ${{ always() && inputs.mode == 'verify' }}

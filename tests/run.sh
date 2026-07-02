@@ -724,18 +724,31 @@ if grep -Eq "if: \\\$\{\{ inputs.mode == 'verify' \}\}" "$REPO/action.yml" \
   ok "action.yml declares verify mode with a checks input"
 else bad "action.yml verify mode plumbing"; fi
 
-# AV2. verify re-runs each check FRESH via done-gate capture (through bash -c).
-if grep -Fq 'bash "$gate" capture --label "$label" -- bash -c "$command"' "$REPO/action.yml" \
-   && grep -Fq 'AGENT_DONE_SESSION="ci-verify-' "$REPO/action.yml"; then
-  ok "action.yml verify re-runs checks fresh in a CI-scoped run"
-else bad "action.yml verify fresh-capture wiring"; fi
+# AV2. the verify step delegates to the testable ci-verify.sh engine.
+if grep -Fq 'bash "$GITHUB_ACTION_PATH/ci-verify.sh"' "$REPO/action.yml" \
+   && [ -f "$REPO/ci-verify.sh" ]; then
+  ok "action.yml verify step delegates to ci-verify.sh"
+else bad "action.yml verify delegates to ci-verify.sh"; fi
 
-# AV3. verify publishes the receipt artifact + SHA in the summary.
+# AV2b. ci-verify.sh re-runs each check FRESH via capture (bash -c, stdin closed).
+if grep -Fq 'bash "$GATE" capture --label "$label" -- bash -c "$command" </dev/null' "$REPO/ci-verify.sh" \
+   && grep -Fq 'AGENT_DONE_SESSION="ci-verify-' "$REPO/ci-verify.sh"; then
+  ok "ci-verify.sh re-runs checks fresh with stdin closed"
+else bad "ci-verify.sh fresh-capture wiring"; fi
+
+# AV2c. ci-verify.sh asserts the PINNED run (not the mutable latest pointer) and
+# defaults ttl to 0 (a just-captured receipt is definitionally fresh).
+if grep -Fq 'assert --run "$AGENT_DONE_SESSION"' "$REPO/ci-verify.sh" \
+   && grep -Fq 'args+=(--ttl 0)' "$REPO/ci-verify.sh"; then
+  ok "ci-verify.sh asserts the pinned CI run with ttl 0"
+else bad "ci-verify.sh pinned-run/ttl wiring"; fi
+
+# AV3. verify publishes the receipt artifact (action) + SHA in the summary (engine).
 if grep -Fq 'uses: actions/upload-artifact@v4' "$REPO/action.yml" \
-   && grep -Fq 'CI-verified receipts' "$REPO/action.yml" \
-   && grep -Fq 'sha256' "$REPO/action.yml"; then
-  ok "action.yml verify uploads receipts + prints SHA in the summary"
-else bad "action.yml verify artifact/summary"; fi
+   && grep -Fq 'CI-verified receipts' "$REPO/ci-verify.sh" \
+   && grep -Fq 'sha256' "$REPO/ci-verify.sh"; then
+  ok "verify uploads receipts + prints SHA in the summary"
+else bad "verify artifact/summary"; fi
 
 # AV4. an unsupported mode is rejected (fail closed).
 if grep -Eq "if: \\\$\{\{ inputs.mode != 'assert' && inputs.mode != 'verify' \}\}" "$REPO/action.yml"; then
@@ -756,22 +769,56 @@ if [ -f "$REPO/docs/ci-templates/github-verify.yml" ] \
   ok "docs/ci-templates/github-verify.yml provides a required-check template"
 else bad "github-verify.yml template missing/malformed"; fi
 
-# AV7. FUNCTIONAL: a committed GREEN receipt is ignored — a fresh RED re-run (what
-# verify does: capture into a CI-scoped run, then assert it) fails the gate.
+CI_VERIFY="$REPO/ci-verify.sh"
+
+# AV7. FUNCTIONAL (through the real ci-verify.sh): a committed GREEN receipt — even
+# one with a forged huge epoch + matching commit, as the `latest` pointer — is
+# IGNORED. A fresh RED re-run fails the gate. This is the core v0.10 guarantee.
 d="$(newsandbox)"
 rc="$( cd "$d" \
   && mkdir -p .agent-proof/committed \
-  && printf '{"label":"test","command":"npm test","exit_code":0,"sha256":"deadbeef","log":"x","at":"2020-01-01T00:00:00Z","epoch":1,"session":"","commit":"'"$(git rev-parse HEAD)"'","tree":"","dirty":false,"schema_version":1,"ci":false,"ref":""}\n' > .agent-proof/committed/ledger.jsonl \
+  && printf '{"label":"test","command":"npm test","exit_code":0,"sha256":"deadbeef","log":"x","at":"2099-01-01T00:00:00Z","epoch":9999999999,"session":"","commit":"'"$(git rev-parse HEAD)"'","tree":"","dirty":false,"schema_version":1,"ci":true,"ref":""}\n' > .agent-proof/committed/ledger.jsonl \
   && printf 'committed\n' > .agent-proof/latest \
-  && AGENT_DONE_SESSION=ci-verify-1 bash "$DONE_GATE" capture --label test -- false >/dev/null 2>&1
-  bash "$DONE_GATE" assert --label test >/dev/null 2>&1; printf '%s' "$?" )"
-[ "$rc" = "1" ] && ok "verify flow: fresh red re-run overrides a committed green receipt" || bad "verify flow committed-green-really-red (got $rc)"
+  && INPUT_CHECKS='test: exit 3' AGENT_DONE_GATE="$DONE_GATE" bash "$CI_VERIFY" >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc" = "1" ] && ok "ci-verify: fresh red re-run overrides a committed (forged) green receipt" || bad "ci-verify committed-green-really-red (got $rc)"
 
-# AV8. FUNCTIONAL: a genuinely fresh green re-run passes the gate.
+# AV8. FUNCTIONAL: a genuinely fresh green re-run passes the gate (multi-check).
 d="$(newsandbox)"
-rc="$( cd "$d" && AGENT_DONE_SESSION=ci-verify-1 bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
-  bash "$DONE_GATE" assert --label test >/dev/null 2>&1; printf '%s' "$?" )"
-[ "$rc" = "0" ] && ok "verify flow: fresh green re-run passes the gate" || bad "verify flow fresh-green (got $rc)"
+rc="$( cd "$d" && INPUT_CHECKS=$'test: true\nbuild: echo ok' AGENT_DONE_GATE="$DONE_GATE" bash "$CI_VERIFY" >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc" = "0" ] && ok "ci-verify: fresh green re-run passes the gate" || bad "ci-verify fresh-green (got $rc)"
+
+# AV9. REGRESSION (stdin drop): a check that reads stdin must NOT swallow the
+# remaining check lines. Here `reader: cat` would eat `mustfail: false` without
+# the </dev/null guard; the guard means mustfail still runs and fails the gate.
+d="$(newsandbox)"
+out="$( cd "$d" && INPUT_CHECKS=$'reader: cat\nmustfail: false' AGENT_DONE_GATE="$DONE_GATE" bash "$CI_VERIFY" >/dev/null 2>&1; echo "rc=$?"
+        ledger="$(cat .agent-proof/*/ledger.jsonl 2>/dev/null)"
+        printf '%s' "$ledger" | grep -q '"label":"reader"' && echo has_reader
+        printf '%s' "$ledger" | grep -q '"label":"mustfail"' && echo has_mustfail )"
+if printf '%s' "$out" | grep -q 'rc=1' \
+   && printf '%s' "$out" | grep -q 'has_reader' \
+   && printf '%s' "$out" | grep -q 'has_mustfail'; then
+  ok "ci-verify: a stdin-reading check does not drop later checks"
+else bad "ci-verify stdin-drop regression ($out)"; fi
+
+# AV10. an invalid label is rejected before it can reach the summary (exit 2).
+d="$(newsandbox)"
+rc="$( cd "$d" && INPUT_CHECKS='bad/label: true' AGENT_DONE_GATE="$DONE_GATE" bash "$CI_VERIFY" >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc" = "2" ] && ok "ci-verify: rejects an invalid label with exit 2" || bad "ci-verify label validation (got $rc)"
+
+# AV11. empty checks + comment/blank-only checks both fail fast (nothing to run).
+d="$(newsandbox)"
+rc1="$( cd "$d" && INPUT_CHECKS='' AGENT_DONE_GATE="$DONE_GATE" bash "$CI_VERIFY" >/dev/null 2>&1; printf '%s' "$?" )"
+rc2="$( cd "$d" && INPUT_CHECKS=$'# just a comment\n\n' AGENT_DONE_GATE="$DONE_GATE" bash "$CI_VERIFY" >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc1" = "2" ] && [ "$rc2" = "2" ] && ok "ci-verify: empty / comment-only checks fail with exit 2" || bad "ci-verify empty-checks (rc1=$rc1 rc2=$rc2)"
+
+# AV12. comments and blank lines are skipped; only real checks run.
+d="$(newsandbox)"
+out="$( cd "$d" && INPUT_CHECKS=$'# a comment\n\ntest: true' AGENT_DONE_GATE="$DONE_GATE" bash "$CI_VERIFY" >/dev/null 2>&1; echo "rc=$?"
+        cat .agent-proof/*/ledger.jsonl 2>/dev/null | grep -c '"label":"test"' )"
+if printf '%s' "$out" | grep -q 'rc=0' && printf '%s' "$out" | tail -n1 | grep -q '^1$'; then
+  ok "ci-verify: comment/blank lines are skipped"
+else bad "ci-verify comment skipping ($out)"; fi
 
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"

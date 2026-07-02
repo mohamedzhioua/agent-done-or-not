@@ -39,9 +39,12 @@ red result. Make `proof-of-done` a required status check and a lie can't merge.
   what actually happened. Documented limits remain (a human-reviewed weakening of
   the CI config, and fork PRs that can't post a Check Run but whose job still
   fails on red) — see the updated threat model and [SECURITY.md](SECURITY.md).
-- `verify` asserts by **explicit label against the CI-scoped run only**, never
-  policy mode — a committed receipt with a forged large `epoch` cannot outrank the
-  fresh capture in a global search.
+- `verify` asserts by **explicit label against the pinned CI-scoped run** (never
+  the mutable `latest` pointer, never policy mode), so neither a committed receipt
+  with a forged large `epoch` nor untrusted code repointing `latest` mid-run can
+  influence the verdict. Each check is captured with **stdin closed** so a
+  stdin-reading check cannot swallow later check lines and slip through unrun. The
+  verify flow lives in a unit-tested `ci-verify.sh` (extracted from `action.yml`).
 
 ## [0.9.0] — 2026-07-02
 

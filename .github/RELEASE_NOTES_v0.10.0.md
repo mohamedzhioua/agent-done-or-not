@@ -43,9 +43,11 @@ status check and a lie can't merge.
 - **Closes the committed-forgery gap for same-repo PRs.** A hand-written green
   receipt cannot survive a red re-run — CI overwrites it with what actually
   happened.
-- `verify` asserts by **explicit label against the CI-scoped run only** (never
-  policy mode), so a committed receipt with a forged large `epoch` cannot outrank
-  the fresh capture.
+- `verify` asserts by **explicit label against the pinned CI-scoped run** (never
+  the mutable `latest` pointer, never policy mode), and captures each check with
+  **stdin closed**, so a forged-`epoch` committed receipt, a mid-run `latest`
+  repoint, or a stdin-reading check cannot slip a red past the gate. The flow
+  lives in a unit-tested `ci-verify.sh`.
 - **Documented limits.** Pinning the Action by tag protects the gate *logic*, not
   the check *commands* — those live in the workflow, a PR-editable file, so a
   reviewer + branch protection are the defense (verifying PR code means running PR

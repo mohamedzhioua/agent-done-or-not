@@ -59,7 +59,7 @@
     },
     "ci": {
       "type": "boolean",
-      "description": "True when captured by a CI runner (GITHUB_ACTIONS or CI env set). A CI-verified receipt (ci:true) was produced by the pinned Action re-running the check, not committed by an agent."
+      "description": "Advisory, self-reported: true when a CI env var (GITHUB_ACTIONS or CI) was set at capture time. It is NOT an authenticity signal — anyone can set CI=1 locally. Trust that a check was CI-verified comes from the Action re-running it (mode: verify), not from this field."
     },
     "ref": {
       "type": "string",
