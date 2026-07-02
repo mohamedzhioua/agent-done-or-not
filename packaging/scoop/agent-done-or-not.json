@@ -1,11 +1,11 @@
 {
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Proof-of-done gate that makes AI agents prove a task is done before claiming it.",
   "homepage": "https://github.com/mohamedzhioua/agent-done-or-not",
   "license": "MIT",
-  "url": "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.9.0.tar.gz",
-  "hash": "8f98a1c6410247802a74ec48389141995db906bae40c776469fd6271015e4156",
-  "extract_dir": "agent-done-or-not-0.9.0",
+  "url": "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.10.0.tar.gz",
+  "hash": "dcf27022c1680e0fd91fc4b954f3f7baf7474810ca8da27bc55ad7a985dceed9",
+  "extract_dir": "agent-done-or-not-0.10.0",
   "pre_install": [
     "# Ship a .cmd launcher that forwards to the bundled native PowerShell",
     "# engine. %~dp0 resolves to this app dir, and cwd is preserved so",
@@ -20,7 +20,7 @@
     "PowerShell 7 for faster startup and newer TLS defaults": "pwsh"
   },
   "notes": [
-    "v0.9.0 binds receipts to git state, makes the Stop hook policy-aware, and is tested on Windows PowerShell 5.1 + 7; native PowerShell engines done-gate.ps1 and stop-gate.ps1 ship too.",
+    "v0.10.0 adds a GitHub Action mode: verify that re-runs your checks fresh in CI (ignoring committed receipts) and stamps receipt provenance; native PowerShell engines done-gate.ps1 and stop-gate.ps1 ship and are tested on Windows PowerShell 5.1 + 7.",
     "No Git Bash required — run directly with pwsh or powershell.",
     "To enforce proof-of-done in Claude Code, wire the Stop hook in",
     ".claude/settings.json to: powershell -NoProfile -File \"<scoop>\\apps\\agent-done-or-not\\current\\stop-gate.ps1\""
