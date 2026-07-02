@@ -565,6 +565,55 @@ try {
 }
 if ($s.ExitCode -eq 2) { Ok 'stop-gate blocks on drift when AGENT_DONE_BIND_STATE=1' } else { Bad "stop-gate drift bindstate (got $($s.ExitCode))" }
 
+Write-Output '== receipt provenance (v0.10) =='
+
+function Restore-Env {
+    param([string]$Name, [AllowNull()][string]$Value)
+    if ($null -eq $Value) { Remove-Item "Env:$Name" -ErrorAction SilentlyContinue }
+    else { Set-Item "Env:$Name" $Value }
+}
+
+# 17. a LOCAL capture stamps schema_version:1, ci:false, empty ref. Clear the CI
+# env so this passes identically whether the suite runs locally or inside CI.
+$d = New-GitSandbox
+$oldCI = $env:CI; $oldGA = $env:GITHUB_ACTIONS; $oldRef = $env:GITHUB_REF
+Remove-Item Env:CI -ErrorAction SilentlyContinue
+Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+Remove-Item Env:GITHUB_REF -ErrorAction SilentlyContinue
+try {
+    $r = Invoke-Gate $d (@('capture', '--label', 't', '--') + (PassingCommand))
+    $receipt = Latest-Receipt $r.ProofDir
+} finally {
+    Restore-Env 'CI' $oldCI
+    Restore-Env 'GITHUB_ACTIONS' $oldGA
+    Restore-Env 'GITHUB_REF' $oldRef
+}
+if ($receipt.schema_version -eq 1 -and $receipt.ci -eq $false -and $receipt.ref -eq '') {
+    Ok 'local capture stamps schema_version:1, ci:false, empty ref'
+} else {
+    Bad 'provenance: local receipt (schema_version/ci/ref)'
+}
+
+# 18. a CI capture (GITHUB_ACTIONS + GITHUB_REF set) stamps ci:true and the ref.
+$d = New-GitSandbox
+$oldCI = $env:CI; $oldGA = $env:GITHUB_ACTIONS; $oldRef = $env:GITHUB_REF
+Remove-Item Env:CI -ErrorAction SilentlyContinue
+$env:GITHUB_ACTIONS = 'true'
+$env:GITHUB_REF = 'refs/pull/7/merge'
+try {
+    $r = Invoke-Gate $d (@('capture', '--label', 't', '--') + (PassingCommand))
+    $receipt = Latest-Receipt $r.ProofDir
+} finally {
+    Restore-Env 'CI' $oldCI
+    Restore-Env 'GITHUB_ACTIONS' $oldGA
+    Restore-Env 'GITHUB_REF' $oldRef
+}
+if ($receipt.ci -eq $true -and $receipt.ref -eq 'refs/pull/7/merge') {
+    Ok 'CI capture stamps ci:true and the ref under test'
+} else {
+    Bad 'provenance: CI receipt (ci/ref)'
+}
+
 Write-Output ''
 Write-Output ("Result: {0} passed, {1} failed" -f $pass, $fail)
 if ($fail -ne 0) { exit 1 }

@@ -1,0 +1,53 @@
+# agent-done-or-not — GitHub Actions "CI-verified receipts" template
+#
+# Copy this file to .github/workflows/proof-of-done.yml in your repo.
+#
+# What it does: on every PR and push, this job IGNORES any .agent-proof/
+# receipts committed in the branch and RE-RUNS your real checks fresh, from the
+# pinned Action code (not from the PR). The receipt it trusts is the one CI just
+# produced — so an agent cannot make the gate green by committing a fabricated
+# passing receipt. If a check really fails, the job fails.
+#
+# Make it a REQUIRED status check so a red result blocks merge:
+#   Settings -> Branches -> Branch protection rule for your default branch ->
+#   "Require status checks to pass before merging" -> add "proof-of-done".
+# The job NAME below ("proof-of-done") is the check name you select there.
+#
+# Trust model: pin the Action by tag (@v0.10.0). GitHub fetches the verifier
+# from that tag, so a PR cannot change how proof is generated or checked. The
+# check COMMANDS live here in `checks:` — a PR-editable file, like any CI config
+# — so a reviewer sees any weakening in the diff, and branch protection keeps the
+# check required. See the project threat model for the fork-PR caveat.
+
+name: proof-of-done
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: verification only needs to read the code. A fork PR runs with
+# a read-only token regardless; the job still fails on a red check (job-as-gate).
+permissions:
+  contents: read
+
+jobs:
+  proof-of-done:
+    name: proof-of-done
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Set up whatever your checks need (language runtime, deps) BEFORE verify.
+      # - uses: actions/setup-node@v4
+      #   with: { node-version: 20 }
+      # - run: npm ci
+
+      - name: Verify proof-of-done (re-run checks fresh)
+        uses: mohamedzhioua/agent-done-or-not@v0.10.0
+        with:
+          mode: verify
+          # One "label: command" per line. Each command runs through `bash -c`.
+          checks: |
+            test: echo "replace with your real test command, e.g. npm test"
+            # build: npm run build

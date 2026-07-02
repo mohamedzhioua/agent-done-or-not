@@ -167,6 +167,42 @@ Run `actions/checkout` first, then produce receipts earlier in the job with
 proof comment (✅/❌ status + the gate output); it never changes the job's
 pass/fail — `assert` still decides that.
 
+#### `mode: verify` — CI re-runs the checks (don't trust committed receipts)
+
+`mode: assert` trusts the receipts the branch committed. `mode: verify` does
+**not**: it ignores any committed `.agent-proof/`, re-runs your real checks
+**fresh** from the pinned Action code, and fails the job on a red result. The
+proof it trusts is the one CI just produced — so an agent can't turn the gate
+green by committing a fabricated passing receipt.
+
+```yaml
+- uses: actions/checkout@v4
+# set up your runtime + deps here (setup-node, npm ci, …)
+- uses: mohamedzhioua/agent-done-or-not@v0.10.0
+  with:
+    mode: verify
+    checks: |          # one "label: command" per line; each runs via bash -c
+      test: npm test
+      build: npm run build
+```
+
+Each fresh receipt's SHA-256 and the verified commit are printed to the job
+summary, and `.agent-proof/` is uploaded as a build artifact.
+
+**Make it a required check.** Copy
+[`docs/ci-templates/github-verify.yml`](docs/ci-templates/github-verify.yml) to
+`.github/workflows/proof-of-done.yml`, then in **Settings → Branches → Branch
+protection → Require status checks to pass before merging** add the
+**`proof-of-done`** check. A red re-run now blocks merge.
+
+**Pin the tag.** `uses: …@v0.10.0` makes GitHub fetch the verifier from that
+tag, not from the PR, so a PR cannot change how proof is generated or checked.
+The check *commands* live in the workflow (a PR-editable file, like any CI
+config) — a reviewer sees any weakening in the diff, and branch protection keeps
+the check required. Fork PRs run with a read-only token; the job still fails on a
+red check, which is all job-as-gate needs. See the
+[threat model](#how-it-can--and-cant--be-fooled-threat-model).
+
 ### Claude Code plugin
 
 Install the thin Claude Code plugin wrapper:
@@ -360,13 +396,33 @@ pick a command that verifies what you claim.
   policy (per-label `command_regex`) or `assert --allow-command-regex`. A policy
   that is present but unparseable **fails closed** — it never silently degrades
   to the most-recent receipt.
+- **A fabricated receipt committed in a PR** → blocked in CI with
+  [`mode: verify`](#mode-verify--ci-re-runs-the-checks-dont-trust-committed-receipts):
+  CI ignores committed receipts and re-runs the checks **fresh** from the pinned
+  Action code, so a hand-written green can't survive a red re-run. Make
+  `proof-of-done` a required status check and a red result blocks merge.
 
 **It does NOT claim to stop these** (out of scope by design):
 - Choosing a *weak* check (an empty test suite "passes"). You pick the command;
   pair it with `--allow-command-regex` and real tests.
-- An agent that rewrites the ledger files by hand. If your agent can freely edit
-  `.agent-proof/` it can forge anything — treat the ledger as you would any
-  workspace file. (`verify --sha` lets a second party confirm a specific hash.)
+- An agent that rewrites the *local* ledger files by hand. If your agent can
+  freely edit `.agent-proof/` it can forge anything locally — treat the ledger as
+  you would any workspace file. (`verify --sha` lets a second party confirm a
+  specific hash; `mode: verify` in CI re-runs the checks so a committed forgery is
+  ignored there.)
+- **A weakened CI config.** `mode: verify` re-runs the check *commands*, but
+  those commands (and which check is *required*) live in the workflow — a
+  PR-editable file, like any CI config. This is not cryptographically
+  protected and can't be: verifying PR code means running PR code. The realistic
+  defense is the same as every CI setup — branch protection keeps the check
+  required, and a reviewer sees any weakening in the diff. Pinning the Action by
+  tag protects the gate *logic*, not the *commands*.
+- **Fork PRs post no checks, but still gate.** A pull request from a fork runs
+  with a read-only `GITHUB_TOKEN`, so the Action can't post a PR comment or a
+  Check Run. The verify **job** still runs and still fails on a red check, which
+  is all job-as-gate needs — the required status check turns red and blocks merge.
+- A malicious maintainer, or an unreviewed force-push past branch protection.
+  Out of scope for a lightweight tool.
 - Hard enforcement on harnesses without a stop hook (Cursor): there the rule is
   advisory, but every receipt is still recorded for you and CI to audit.
 - **Async / fire-and-forget work.** A receipt captures the command's exit state

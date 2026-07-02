@@ -53,3 +53,68 @@ jobs:
           mode: assert
           labels: selftest
           pr-comment: "false"
+
+  verify-success:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # mode: verify ignores committed receipts and re-runs the checks fresh.
+      - name: Verify a passing check fresh
+        uses: ./
+        with:
+          mode: verify
+          checks: |
+            selftest: true
+
+  verify-catches-red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A committed GREEN receipt that lies: the real check below fails. verify
+      # must re-run it fresh, catch the red, and fail — proving committed proof
+      # is never trusted.
+      - name: Commit a fabricated passing receipt
+        run: |
+          mkdir -p .agent-proof/committed
+          commit="$(git rev-parse HEAD)"
+          printf '{"label":"selftest","command":"true","exit_code":0,"sha256":"%s","log":"x","at":"2020-01-01T00:00:00Z","epoch":1,"session":"","commit":"%s","tree":"","dirty":false,"schema_version":1,"ci":false,"ref":""}\n' \
+            "$(printf '' | sha256sum | cut -d' ' -f1)" "$commit" > .agent-proof/committed/ledger.jsonl
+          printf 'committed\n' > .agent-proof/latest
+
+      - name: Verify with a really-red check
+        id: red_check
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: verify
+          checks: |
+            selftest: exit 1
+
+      - name: Confirm verify caught the red check
+        run: |
+          if [ "${{ steps.red_check.outcome }}" != "failure" ]; then
+            echo "Expected verify to fail on a really-red check, got ${{ steps.red_check.outcome }}"
+            exit 1
+          fi
+
+  verify-requires-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # mode: verify with no checks must fail fast (nothing to re-run).
+      - name: Verify without checks should fail
+        id: no_checks
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: verify
+
+      - name: Confirm the missing-checks verify failed
+        run: |
+          if [ "${{ steps.no_checks.outcome }}" != "failure" ]; then
+            echo "Expected verify to fail with no checks, got ${{ steps.no_checks.outcome }}"
+            exit 1
+          fi

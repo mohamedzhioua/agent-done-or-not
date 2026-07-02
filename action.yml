@@ -1,11 +1,20 @@
 name: Agent Done Or Not
-description: Gate a GitHub Actions job on proof-of-done receipts.
+description: Gate a GitHub Actions job on proof-of-done receipts (assert committed receipts, or verify by re-running checks fresh).
 
 inputs:
   mode:
-    description: Action mode. Only "assert" is currently supported.
+    description: 'Action mode: "assert" trusts committed receipts; "verify" ignores them and re-runs the checks fresh from the pinned Action code.'
     required: false
     default: assert
+  checks:
+    description: |
+      For mode: verify — the checks to re-run, one "label: command" per line, e.g.
+        checks: |
+          test: npm test
+          build: npm run build
+      Each command is run through `bash -c`. Ignored in mode: assert.
+    required: false
+    default: ""
   labels:
     description: Space-separated receipt labels to require.
     required: false
@@ -15,7 +24,7 @@ inputs:
     required: false
     default: ""
   allow-command-regex:
-    description: Regex that the recorded command must match.
+    description: 'Regex the RECORDED command must match. Note: in mode: verify each check runs via `bash -c "<command>"`, so the recorded command is `bash -c <command>` — write the regex to allow for that prefix (it is a substring match).'
     required: false
     default: ""
   json:
@@ -38,7 +47,17 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Reject unsupported mode
+      if: ${{ inputs.mode != 'assert' && inputs.mode != 'verify' }}
+      shell: bash
+      env:
+        INPUT_MODE: ${{ inputs.mode }}
+      run: |
+        printf 'agent-done-or-not action: unsupported mode "%s"; use "assert" or "verify".\n' "$INPUT_MODE" >&2
+        exit 2
+
     - name: Assert proof-of-done receipts
+      if: ${{ inputs.mode == 'assert' }}
       shell: bash
       env:
         INPUT_MODE: ${{ inputs.mode }}
@@ -107,6 +126,29 @@ runs:
         fi
 
         exit "$status"
+
+    - name: Verify proof-of-done (re-run checks fresh, ignore committed receipts)
+      id: verify
+      if: ${{ inputs.mode == 'verify' }}
+      shell: bash
+      env:
+        INPUT_CHECKS: ${{ inputs.checks }}
+        INPUT_TTL: ${{ inputs.ttl }}
+        INPUT_ALLOW_COMMAND_REGEX: ${{ inputs.allow-command-regex }}
+        INPUT_JSON: ${{ inputs.json }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      # The verify flow lives in ci-verify.sh (next to done-gate.sh) so it is
+      # unit-testable instead of buried in this YAML. It re-runs each check fresh,
+      # ignores committed receipts, and exits non-zero on any red check.
+      run: bash "$GITHUB_ACTION_PATH/ci-verify.sh"
+
+    - name: Upload proof receipts artifact
+      if: ${{ always() && inputs.mode == 'verify' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: agent-done-proof
+        path: ${{ steps.verify.outputs.proof-dir }}
+        if-no-files-found: ignore
 
     - name: Post proof summary as PR comment
       if: ${{ inputs.pr-comment == 'true' && github.event_name == 'pull_request' }}
