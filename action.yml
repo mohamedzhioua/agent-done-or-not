@@ -1,6 +1,12 @@
 name: Agent Done Or Not
 description: Gate a GitHub Actions job on proof-of-done receipts (assert committed receipts, or verify by re-running checks fresh).
 
+# Shown on the GitHub Marketplace listing. icon = a Feather icon name; color is
+# one of white/black/yellow/blue/green/orange/red/purple/gray-dark.
+branding:
+  icon: check-circle
+  color: green
+
 inputs:
   mode:
     description: 'Action mode: "assert" trusts committed receipts; "verify" ignores them and re-runs the checks fresh from the pinned Action code.'
@@ -71,11 +77,8 @@ runs:
 
         cd "$INPUT_WORKING_DIRECTORY"
 
-        if [ "$INPUT_MODE" != "assert" ]; then
-          printf 'agent-done-or-not action: unsupported mode "%s"; only "assert" is supported.\n' "$INPUT_MODE" >&2
-          exit 2
-        fi
-
+        # (mode is gated by the step `if:` above and the reject-unsupported-mode
+        # step, so no inner mode check is needed here.)
         args=(assert)
 
         if [ -n "$INPUT_LABELS" ]; then

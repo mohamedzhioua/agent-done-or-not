@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-07-03
+
+Packaging/metadata patch — no engine behavior change.
+
+### Added
+- **Marketplace branding** on the composite Action (`branding.icon: check-circle`,
+  `color: green`) so it can be listed on the GitHub Marketplace with an icon.
+
+### Changed
+- Removed a now-unreachable inner mode check in the `assert` step (the step is
+  already gated by `if: inputs.mode == 'assert'` plus the reject-unsupported-mode
+  step). No behavior change.
+
+### Note
+- `@v0` references in the docs now resolve via a **moving `v0` major tag** that
+  tracks the latest `v0.x` release. For the security-critical `mode: verify` gate,
+  keep pinning an exact tag (e.g. `@v0.10.1`) as the README recommends.
+
 ## [0.10.0] — 2026-07-02
 
 The CI-verified-receipts release. Until now the GitHub Action ran only
