@@ -77,13 +77,20 @@ Then wire the rule + hook for your tool — see **[examples/install.md](examples
 
 ```bash
 npx skills add mohamedzhioua/agent-done-or-not
+# or target just this skill:
+npx skills add mohamedzhioua/agent-done-or-not --skill done-or-not
 ```
 
 Installs the proof-of-done rule as a skill for Claude Code / Codex / other
-agents. A skill-only install gives the agent instructions, not repo-root gate
-scripts; use `npx agent-done-or-not capture ...` from the skill, or run
-`agent-done-or-not init` / the installer first to add local `done-gate.*`
-scripts and hook config.
+agents (the [`skills` CLI](https://github.com/vercel-labs/skills) auto-discovers
+`skills/done-or-not/SKILL.md`). A skill-only install gives the agent
+instructions, not repo-root gate scripts; use `npx agent-done-or-not capture ...`
+from the skill, or run `agent-done-or-not init` / the installer first to add local
+`done-gate.*` scripts and hook config.
+
+The skill is discoverable in the [skills.sh](https://www.skills.sh/) directory —
+running the command above is what surfaces it there (the directory ranks skills
+by anonymous install telemetry).
 
 ### npm / npx
 
