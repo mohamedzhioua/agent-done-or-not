@@ -14,3 +14,6 @@ HANDOFF.md
 
 # codex-rescue runtime artifacts
 .ai-os/
+
+# External feedback — never committed (tracked separately)
+feedbacks/

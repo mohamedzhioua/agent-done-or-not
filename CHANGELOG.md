@@ -6,6 +6,64 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-02
+
+The state-bound-trust release. v0.8.0 defined *what counts as done*; v0.9.0 binds
+every receipt to the **source it verified** and closes the Windows and setup gaps
+that blocked adoption. A green receipt from before your last edit no longer looks
+identical to a fresh one, and the hard Stop gate is now as strict as `assert`.
+
+### Added
+- **Git-state binding** — `capture` now records the `commit` (full 40-char HEAD
+  SHA), `tree` (`git rev-parse HEAD^{tree}`), and `dirty` (working-tree status)
+  at capture time in each receipt (see the extended [`proof.schema.json`](proof.schema.json)).
+  Fields are empty/`false` outside a git repo, so nothing breaks off-VCS.
+- **State-drift detection** — `assert`, the Stop gate, and `report` warn when the
+  newest passing receipt was captured against a **different commit** (or a dirty
+  tree) than the current one — the CI-cache / edit-after-check staleness gap from
+  user feedback. Advisory by default; set `AGENT_DONE_BIND_STATE=1` to make drift
+  a hard failure/block. `assert --json` gains `state_drift` + per-check `drift`.
+- **Policy-aware Stop gate** — `stop-gate.sh`/`stop-gate.ps1` now enforce an
+  `agent-done.json` policy: a single fresh passing receipt of any label no longer
+  clears the gate when a policy requires more (parity with `assert`). Policy
+  evaluation is delegated to the engine and **fails closed** if it can't be run.
+- **Test-file-diff guard** — `report` flags a "done" claim sitting on top of
+  uncommitted changes to test/spec files (advisory; the most-cited agent
+  check-gaming pattern). Never changes pass/fail.
+- **`npx agent-done-or-not stop-gate`** — runs the bundled Stop hook (piping the
+  hook payload on stdin) so a hook needs no vendored scripts and keeps the engine
+  beside it for policy.
+- **Windows CI matrix** — `test.yml` now runs the PowerShell parity suite under
+  **both Windows PowerShell 5.1 and PowerShell 7+** on `windows-latest`, plus an
+  npm-wrapper smoke — the coverage gap that let the encoding/WSL bugs ship.
+
+### Changed
+- **npm wrapper prefers PowerShell on Windows.** To dodge the WSL-`bash.exe`
+  trap, the wrapper now runs the native `.ps1` engine first on Windows (it ran
+  `bash` first before). Receipts are identical, but the *check command* runs
+  under PowerShell rather than bash — set `AGENT_DONE_SHELL=bash` (or `pwsh`) to
+  force the order if your verifying command is shell-specific.
+- **State-drift is commit-granular and honest about it.** Drift is flagged for a
+  new commit or edits after a *clean* capture; a proof legitimately captured
+  against a dirty tree is not re-flagged (the recorded `dirty`/`commit` are
+  compared, not a fresh `git status`). `AGENT_DONE_BIND_STATE=1` also requires a
+  commit binding to be present. This defends against *honest* staleness (stale CI
+  cache, edit-after-check) — not a tampered ledger, which remains equivalent to
+  forging `exit_code:0` (see the threat model).
+
+### Fixed
+- **`init` installs a working hook** — `init --claude-hook` now copies the gate
+  scripts into the target repo, so the generated Stop hook resolves instead of
+  pointing at files that don't exist. It refreshes an older copy of our own
+  scripts on re-init (so upgrades take effect) and preserves an unrelated file of
+  the same name unless `--force`.
+- **Windows PowerShell 5.1 encoding** — removed the non-ASCII em-dashes from
+  `done-gate.ps1` (and `tests/run.ps1`) that broke parsing under WinPS 5.1's
+  UTF-8-no-BOM decode. All engine `.ps1` files are now pure ASCII.
+- **npm wrapper Windows/WSL trap** — the wrapper now tries PowerShell **first** on
+  Windows, so a WSL `bash.exe` on PATH that chokes on a Windows script path no
+  longer aborts before the native `.ps1` engine runs.
+
 ## [0.8.0] — 2026-06-23
 
 The trust-layer release. v0.7.0 made the evidence *visible*; v0.8.0 lets a

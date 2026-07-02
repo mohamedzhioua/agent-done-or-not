@@ -67,6 +67,9 @@ manual two-file install in **[examples/install.md](examples/install.md)**.
 Then wire the rule + hook for your tool — see **[examples/install.md](examples/install.md)**.
 
 - **Claude Code** → drop in `CLAUDE.md` + the `Stop` hook = hard enforcement.
+  `init --claude-hook` (alias `--claude`) also copies the gate scripts into the
+  repo, so the generated hook resolves instead of pointing at files that don't
+  exist.
 - **Cursor** → drop in `.cursorrules`.
 - **Codex / others** → drop in `AGENTS.md`.
 
@@ -94,6 +97,17 @@ npx agent-done-or-not assert --label test --ttl 3600
 
 The npm wrapper uses the bundled Bash engine when Bash is available, and falls
 back to the bundled PowerShell engine on Windows.
+
+You can also wire the Stop hook itself through npx, with no vendored scripts
+needed:
+
+```bash
+npx agent-done-or-not stop-gate
+```
+
+Point your harness's Stop/finish hook at that command instead of a local
+`stop-gate.sh` / `stop-gate.ps1` file — it pipes the hook payload on stdin and
+keeps the engine (and any policy file) beside it.
 
 Fast local smoke check for the npm wrapper:
 
@@ -289,16 +303,27 @@ set `pr-comment: "true"`.
 ## How it works
 
 1. **`done-gate.sh capture`** runs your check, streams its output, and appends a
-   receipt to `.agent-proof/<run>/ledger.jsonl`. It exits with the command's own
-   exit code.
+   receipt to `.agent-proof/<run>/ledger.jsonl` — including the git `commit`
+   (full HEAD SHA), `tree`, and `dirty` state at capture time (empty/`false`
+   outside a git repo). It exits with the command's own exit code.
 2. **`stop-gate.sh`** is a Stop-event hook. It blocks the agent from ending its
    turn unless the most recent receipt is:
    - **passing** (a red check can never mean "done"),
    - **fresh** — judged by the epoch recorded *inside* the receipt (not file
      mtime, which `touch` could forge); older than `AGENT_DONE_TTL` (default 1h)
-     is rejected, so it never honors yesterday's ledger, and
+     is rejected, so it never honors yesterday's ledger,
    - **not already used** to clear a previous stop (every completion needs its
-     own proof).
+     own proof), and
+   - **policy-satisfying** — if `agent-done.json` exists, the gate requires a
+     fresh passing receipt for *every* required label, not just the latest
+     receipt of any label (parity with `assert`). It **fails closed** if the
+     policy can't be evaluated.
+3. **State drift is flagged, not silently ignored.** `assert`, `report`, and
+   the Stop gate compare the receipt's recorded commit/tree/dirty state to the
+   current one. A mismatch — the classic "green receipt from
+   before your last edit" or stale-CI-cache gap — prints an advisory warning by
+   default; set `AGENT_DONE_BIND_STATE=1` to turn that warning into a hard
+   failure/block.
 
 **It fails closed.** Once a stop is being gated, any missing, empty, unparseable,
 or stale proof state *blocks*. The only ways past are a verified passing receipt,
@@ -315,6 +340,12 @@ cross-model (Codex) security review — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 `agent-done-or-not` is built to resist an agent that *wants* to look done. It is
 a forcing function, not a sandbox; here's the honest boundary.
+
+Precisely: the SHA-256 is proof of exactly what the recorded command printed.
+The receipt as a whole is a **verification receipt** — evidence that the
+configured check ran and passed against a specific commit — not a proof of
+semantic correctness or that the task is actually finished. You still have to
+pick a command that verifies what you claim.
 
 **It stops these:**
 - Claiming "done" with no check run → blocked (no receipt).
@@ -338,6 +369,16 @@ a forcing function, not a sandbox; here's the honest boundary.
   workspace file. (`verify --sha` lets a second party confirm a specific hash.)
 - Hard enforcement on harnesses without a stop hook (Cursor): there the rule is
   advisory, but every receipt is still recorded for you and CI to audit.
+- **Async / fire-and-forget work.** A receipt captures the command's exit state
+  at the moment it exits — not background work that finishes later. If the
+  real check is asynchronous, use a command that blocks until it's done (poll,
+  wait, or a synchronous health check); otherwise don't claim done from it.
+- **A stale green from before your last edit.** This is why receipts are now
+  bound to the git commit/tree at capture time (see [How it
+  works](#how-it-works)) — a receipt captured against old code, including a
+  cached CI green, no longer looks identical to a fresh one. Set
+  `AGENT_DONE_BIND_STATE=1` to make that drift a hard failure instead of a
+  warning.
 
 Report a bypass — see [SECURITY.md](SECURITY.md). It's the most valuable issue
 you can file.
@@ -355,13 +396,26 @@ export AGENT_DONE_OFF=1   # disable the gate
 
 **Windows?** Fully supported natively. `done-gate.ps1` and `stop-gate.ps1`
 are native PowerShell ports (PS 5.1 + PS 7+, no bash required). Receipts
-are interchangeable between the bash and PowerShell engines.
+are interchangeable between the bash and PowerShell engines. CI (`test.yml`)
+runs the PowerShell parity suite on both **Windows PowerShell 5.1** and
+**PowerShell 7+** on every push.
+
+**What does `AGENT_DONE_BIND_STATE=1` do?** Turns the advisory git-state-drift
+warning (receipt commit/tree/dirty doesn't match the current one) into a hard
+failure for `assert` and a hard block for the Stop gate, and requires the receipt
+to carry a commit binding at all. Off by default so it doesn't break off-VCS or
+detached-HEAD usage. It defends against **honest** staleness — a stale CI cache
+or a green from before your last edit — not a tampered ledger: an agent that can
+write the ledger can also write a matching `commit`, which is the same trust
+boundary as forging `exit_code:0` (see the threat model).
 
 **Won't it get my agent stuck?** No — after `AGENT_DONE_MAX_RETRIES` consecutive
 blocks it fails open with a loud warning, and `AGENT_DONE_OFF=1` disables it.
 
 **Is the receipt private?** Yes — `.agent-proof/` is local and gitignored; it's
-never committed.
+never committed. Keeping it ignored also matters for the git-state check above:
+if `.agent-proof/` weren't ignored, writing a receipt would dirty the tree it's
+supposed to be describing.
 
 **What's the difference between `capture` and `assert`?** `capture` *runs* a
 check and records proof (use it in the agent loop). `assert` *checks the ledger*

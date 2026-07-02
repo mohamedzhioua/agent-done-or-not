@@ -611,6 +611,74 @@ else
   ok "pr marker-injection test skipped (no node on PATH)"
 fi
 
+echo "== state binding + stop-gate policy (v0.9) =="
+
+# S1. capture binds the receipt to git commit + tree + dirty.
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
+line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
+if printf '%s' "$line" | grep -qE '"commit":"[0-9a-f]{40}"' \
+   && printf '%s' "$line" | grep -qE '"tree":"[0-9a-f]+"' \
+   && printf '%s' "$line" | grep -qE '"dirty":(true|false)'; then
+  ok "capture binds the receipt to commit + tree + dirty"
+else bad "state binding: receipt is missing commit/tree/dirty"; fi
+
+# S2. assert warns on state drift (HEAD advanced since capture) but still exits 0.
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  git commit -q --allow-empty -m next >/dev/null 2>&1 )
+err="$( cd "$d" && bash "$DONE_GATE" assert --label test 2>&1 >/dev/null )"
+rc="$( cd "$d" && bash "$DONE_GATE" assert --label test >/dev/null 2>&1; printf '%s' "$?" )"
+if [ "$rc" = "0" ] && printf '%s' "$err" | grep -q 'HEAD is now'; then
+  ok "assert warns on state drift (advisory) but exits 0"
+else bad "assert drift advisory (rc=$rc)"; fi
+
+# S3. AGENT_DONE_BIND_STATE=1 turns state drift into a hard assert failure.
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  git commit -q --allow-empty -m next >/dev/null 2>&1 )
+rc="$( cd "$d" && AGENT_DONE_BIND_STATE=1 bash "$DONE_GATE" assert --label test >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc" = "1" ] && ok "AGENT_DONE_BIND_STATE=1 fails assert on drift" || bad "bind-state assert (got $rc)"
+
+# S4. stop-gate is policy-aware: a passing receipt for a NON-required label must
+# not clear the gate when a policy demands other labels (the core v0.9 fix).
+d="$(newsandbox)"
+rc="$( cd "$d" && printf '{ "required": [ { "label": "test" }, { "label": "build" } ] }\n' > agent-done.json
+       bash "$DONE_GATE" capture --label lint -- true >/dev/null 2>&1
+       gate "$PAYLOAD" )"
+[ "$rc" = "2" ] && ok "stop-gate blocks when a policy label lacks a passing receipt" || bad "stop-gate policy block (got $rc)"
+
+# S5. stop-gate allows once every required policy label has a fresh passing receipt.
+d="$(newsandbox)"
+rc="$( cd "$d" && printf '{ "required": [ { "label": "test" }, { "label": "build" } ] }\n' > agent-done.json
+       bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+       bash "$DONE_GATE" capture --label build -- true >/dev/null 2>&1
+       gate "$PAYLOAD" )"
+[ "$rc" = "0" ] && ok "stop-gate allows when all policy labels are satisfied" || bad "stop-gate policy allow (got $rc)"
+
+# S6. stop-gate FAILS CLOSED when a policy is present but done-gate.sh is not next
+# to it (cannot evaluate the policy -> must not silently allow).
+d="$(newsandbox)"
+cp "$STOP_GATE" "$d/stop-gate.sh"
+rc="$( cd "$d" && printf '{ "required": [ { "label": "test" } ] }\n' > agent-done.json
+       bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+       printf '%s' "$PAYLOAD" | bash ./stop-gate.sh >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc" = "2" ] && ok "stop-gate fails closed when it cannot evaluate a present policy" || bad "stop-gate policy fail-closed (got $rc)"
+
+# S7. stop-gate drift is advisory by default (non-breaking).
+d="$(newsandbox)"
+rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
+       git commit -q --allow-empty -m next >/dev/null 2>&1
+       gate "$PAYLOAD" )"
+[ "$rc" = "0" ] && ok "stop-gate drift is advisory by default (still allows)" || bad "stop-gate drift default (got $rc)"
+
+# S8. stop-gate blocks on drift under AGENT_DONE_BIND_STATE=1.
+d="$(newsandbox)"
+rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
+       git commit -q --allow-empty -m next >/dev/null 2>&1
+       printf '%s' "$PAYLOAD" | AGENT_DONE_BIND_STATE=1 bash "$STOP_GATE" >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc" = "2" ] && ok "stop-gate blocks on drift when AGENT_DONE_BIND_STATE=1" || bad "stop-gate bind-state (got $rc)"
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -33,7 +33,7 @@ keywords:
   - roo
 metadata:
   author: mohamedzhioua
-  version: "0.6.0"
+  version: "0.9.0"
 ---
 
 # done-or-not
@@ -123,6 +123,25 @@ On Windows, replace with:
 "command": "powershell -NoProfile -File \"$env:CLAUDE_PROJECT_DIR\\stop-gate.ps1\""
 ```
 
+No repo-root scripts? Wire the hook straight through npx instead — it pipes the
+hook payload on stdin and needs nothing vendored into the repo:
+
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "npx agent-done-or-not stop-gate"
+      }]
+    }]
+  }
+}
+```
+
+`agent-done-or-not init --claude-hook` also copies the gate scripts into the
+repo automatically, so a generated hook that points at local files resolves.
+
 ## Installation options
 
 | Method | Command |
@@ -145,3 +164,4 @@ On Windows, replace with:
 | `AGENT_DONE_DIR` | `<repo>/.agent-proof` | Where receipts are stored |
 | `AGENT_DONE_SESSION` | (from hook payload) | Session isolation |
 | `AGENT_DONE_OFF` | — | Set to `1` to disable (escape hatch) |
+| `AGENT_DONE_BIND_STATE` | — | Set to `1` to make a git commit/tree/dirty mismatch against the newest passing receipt a hard failure/block instead of an advisory warning |

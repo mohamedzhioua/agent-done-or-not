@@ -11,6 +11,8 @@ const { spawnSync } = require('child_process');
 const pkgRoot = path.join(__dirname, '..');
 const bashGate = path.join(pkgRoot, 'done-gate.sh');
 const psGate = path.join(pkgRoot, 'done-gate.ps1');
+const bashStopGate = path.join(pkgRoot, 'stop-gate.sh');
+const psStopGate = path.join(pkgRoot, 'stop-gate.ps1');
 const args = process.argv.slice(2);
 const proofStart = '<!-- agent-done-or-not:start -->';
 const proofEnd = '<!-- agent-done-or-not:end -->';
@@ -45,12 +47,13 @@ function printHelp() {
   process.stdout.write(`agent-done-or-not
 
 Usage:
-  agent-done-or-not init [--dry-run] [--yes] [--claude-hook] [--claude] [--policy] [--label name --command "cmd"]
+  agent-done-or-not init [--dry-run] [--yes] [--claude-hook] [--claude] [--policy] [--force] [--label name --command "cmd"]
   agent-done-or-not report [--format markdown|html|json|pr]
   agent-done-or-not capture --label check -- <command>
   agent-done-or-not assert [--label check] [--ttl seconds]
+  agent-done-or-not stop-gate   (run the bundled Stop hook; reads payload on stdin)
 
-Commands other than init/report are forwarded to the bundled proof gate.
+Commands other than init/report/stop-gate are forwarded to the bundled proof gate.
 `);
 }
 
@@ -59,6 +62,45 @@ function run(command, commandArgs) {
     stdio: 'inherit',
     cwd: process.cwd(),
   });
+}
+
+// Run a .sh/.ps1 gate pair, exiting with its code. On Windows we try PowerShell
+// FIRST: a WSL `bash.exe` on PATH launches fine but chokes on the Windows script
+// path, and its non-ENOENT failure would otherwise never fall through to the
+// native .ps1 engine (the historical Windows/WSL adoption trap). Elsewhere bash
+// leads. finish() only returns false on ENOENT, so a real check failure exits
+// with its own code instead of retrying the other shell.
+function runPs(script, forwardArgs) {
+  for (const shell of ['pwsh', 'powershell']) {
+    const result = run(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, ...forwardArgs]);
+    if (result.error && result.error.code === 'ENOENT') continue;
+    return result;
+  }
+  return { error: { code: 'ENOENT' } };
+}
+
+function forwardToGate(bashScript, psScript, forwardArgs) {
+  const tryBash = () => run('bash', [bashScript, ...forwardArgs]);
+  const tryPs = () => runPs(psScript, forwardArgs);
+  // Default: bash-first, except Windows prefers the native PowerShell engine so a
+  // WSL bash.exe on PATH (which fails on a Windows script path) can't abort the
+  // run before the .ps1 engine is tried. AGENT_DONE_SHELL=bash|pwsh forces the
+  // order — e.g. Git-Bash-on-Windows users who want bash-flavored check commands.
+  const pref = String(process.env.AGENT_DONE_SHELL || '').toLowerCase();
+  let order;
+  if (pref === 'bash') order = [tryBash, tryPs];
+  else if (pref === 'pwsh' || pref === 'powershell') order = [tryPs, tryBash];
+  else order = process.platform === 'win32' ? [tryPs, tryBash] : [tryBash, tryPs];
+  for (const attempt of order) {
+    // finish() exits with the child's own status on any non-ENOENT outcome and
+    // returns false only when the shell was missing (ENOENT) -> try the next one.
+    // The trailing exit is a defensive backstop (finish never returns truthy).
+    if (finish(attempt()) !== false) process.exit(1);
+  }
+  process.stderr.write(
+    'agent-done-or-not: no supported shell found. Install bash, or on Windows install/use PowerShell.\n'
+  );
+  process.exit(127);
 }
 
 function finish(result) {
@@ -202,6 +244,46 @@ function patchInstructionFile(file, block, dryRun, touched) {
   }
 }
 
+// Does this file look like a previous copy of one of OUR gate scripts? Used so an
+// upgrade+re-init refreshes stale vendored scripts (else a repo initialized on an
+// older version keeps weaker, e.g. policy-unaware, enforcement) without ever
+// clobbering an unrelated user file of the same name.
+function looksLikeOurGate(file) {
+  try {
+    const head = fs.readFileSync(file, 'utf8').slice(0, 800);
+    return head.includes('proof receipts for AI coding agents')
+        || head.includes('block "done" until it');
+  } catch (_) { return false; }
+}
+
+function sameContent(a, b) {
+  try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch (_) { return false; }
+}
+
+// Install the gate scripts into the target repo so a hook that references
+// `$CLAUDE_PROJECT_DIR/stop-gate.sh` resolves, and so stop-gate finds done-gate
+// beside it for policy enforcement. Copies when missing; REFRESHES an older copy
+// of our own script (so upgrades take effect); preserves a foreign file of the
+// same name unless --force. A self-init in this repo is a harmless no-op.
+function copyGateScripts(cwd, dryRun, touched, force) {
+  for (const name of ['done-gate.sh', 'done-gate.ps1', 'stop-gate.sh', 'stop-gate.ps1']) {
+    const src = path.join(pkgRoot, name);
+    const dest = path.join(cwd, name);
+    if (!fileExists(src)) continue;
+    if (fileExists(dest)) {
+      if (sameContent(src, dest)) continue;             // already up to date
+      if (!force && !looksLikeOurGate(dest)) continue;  // preserve an unrelated file
+    }
+    touched.push(path.relative(cwd, dest) || name);
+    if (!dryRun) {
+      fs.copyFileSync(src, dest);
+      if (name.endsWith('.sh')) {
+        try { fs.chmodSync(dest, 0o755); } catch (_) {}
+      }
+    }
+  }
+}
+
 function writeClaudeHook(cwd, dryRun, touched) {
   const settingsFile = path.join(cwd, '.claude', 'settings.json');
   const settings = readJson(settingsFile) || {};
@@ -255,6 +337,7 @@ function runInit() {
   const dryRun = args.includes('--dry-run');
   // Accept both --claude-hook and --claude as aliases
   const claudeHook = args.includes('--claude-hook') || args.includes('--claude');
+  const force = args.includes('--force');
   const writePolicy = args.includes('--policy');
   const cwd = process.cwd();
   const checks = detectChecks(cwd);
@@ -266,7 +349,10 @@ function runInit() {
   const touched = [];
   const block = proofBlock(checks);
   for (const target of targets) patchInstructionFile(target, block, dryRun, touched);
-  if (claudeHook) writeClaudeHook(cwd, dryRun, touched);
+  if (claudeHook) {
+    copyGateScripts(cwd, dryRun, touched, force);
+    writeClaudeHook(cwd, dryRun, touched);
+  }
 
   let policyRelPath = null;
   if (writePolicy) {
@@ -307,6 +393,46 @@ function gitValue(argsForGit) {
   const result = spawnSync('git', argsForGit, { cwd: process.cwd(), encoding: 'utf8' });
   if (result.status !== 0) return null;
   return String(result.stdout || '').trim();
+}
+
+// Heuristic: does this path look like a test/spec file? Used only for an advisory
+// (never changes pass/fail) that flags a "done" claim sitting on top of
+// uncommitted test edits — the most-cited agent check-gaming pattern.
+function isTestPath(p) {
+  return /(^|\/)(tests?|specs?|__tests__)\//i.test(p)
+    || /\.(test|spec)\.[A-Za-z0-9]+$/i.test(p)
+    || /(^|\/)test_[^/]*\.py$/i.test(p)
+    || /_test\.(go|py|rb|rs|js|ts)$/i.test(p);
+}
+
+function changedTestFiles() {
+  const out = new Set();
+  for (const gitArgs of [['diff', '--name-only'], ['diff', '--cached', '--name-only']]) {
+    const v = gitValue(gitArgs);
+    if (!v) continue;
+    for (const line of v.split(/\r?\n/)) {
+      if (line && isTestPath(line)) out.add(line);
+    }
+  }
+  return Array.from(out);
+}
+
+// Reason the newest receipt no longer matches the working tree, else ''. Mirrors
+// the gate logic: a new commit, or edits after a CLEAN capture. Uses the
+// receipt's recorded commit/dirty; silent on pre-binding receipts (advisory).
+function driftReason(receipts) {
+  const latest = receipts[0];
+  if (!latest || !latest.commit) return '';
+  const fullHead = gitValue(['rev-parse', 'HEAD']);
+  if (!fullHead) return '';
+  if (latest.commit !== fullHead) {
+    return `proof captured at ${String(latest.commit).slice(0, 7)} but HEAD is now ${fullHead.slice(0, 7)}`;
+  }
+  if (latest.dirty === false) {
+    const dirty = gitValue(['status', '--porcelain']);
+    if (dirty) return 'working tree changed since the (clean) proof was captured';
+  }
+  return '';
 }
 
 // Relative age helper: "just now" / "Nm ago" / "Nh ago" / "Nd ago"
@@ -377,10 +503,14 @@ function runReport() {
   const state = reportState(receipts);
   const commit = gitValue(['rev-parse', '--short', 'HEAD']);
   const dirty = gitValue(['status', '--porcelain']);
+  const drift = driftReason(receipts);
+  const testsTouched = changedTestFiles();
   const payload = {
     state,
     commit,
     dirty: dirty === null ? null : dirty.length > 0,
+    state_drift: drift || null,
+    tests_touched: testsTouched,
     bypass: process.env.AGENT_DONE_OFF === '1',
     receipts: receipts.slice(0, 20),
   };
@@ -469,6 +599,16 @@ function runReport() {
       lines.push('');
     }
 
+    if (drift) {
+      lines.push(`> ⚠️ ${drift} — this proof may not reflect the current code`);
+      lines.push('');
+    }
+
+    if (testsTouched.length) {
+      lines.push(`> ⚠️ uncommitted changes to test files (${testsTouched.slice(0, 5).map(mdCell).join(', ')}) — confirm the check wasn't weakened`);
+      lines.push('');
+    }
+
     if (isPassing) {
       lines.push('> This completion is backed by a fresh passing receipt.');
     } else {
@@ -523,6 +663,12 @@ function runReport() {
   if (warning.fires) {
     cardLines.push(`> ⚠️ latest proof is ${warning.weakLabel}-only — this may not verify the requested behavior`);
   }
+  if (drift) {
+    cardLines.push(`> ⚠️ ${drift} — this proof may not reflect the current code`);
+  }
+  if (testsTouched.length) {
+    cardLines.push(`> ⚠️ uncommitted changes to test files (${testsTouched.slice(0, 5).join(', ')}) — confirm the check wasn't weakened`);
+  }
 
   // Existing table (legacy markdown report)
   const legacyTable = [
@@ -556,28 +702,11 @@ if (args[0] === 'report') {
   process.exit(0);
 }
 
-const bashResult = run('bash', [bashGate, ...args]);
-if (finish(bashResult) !== false) {
-  process.exit(1);
+// `stop-gate` runs the bundled Stop hook, piping the caller's stdin (the hook
+// payload) through. Lets a Claude Code hook use `npx agent-done-or-not stop-gate`
+// without vendoring scripts, and keeps done-gate next to stop-gate for policy.
+if (args[0] === 'stop-gate') {
+  forwardToGate(bashStopGate, psStopGate, args.slice(1));
 }
 
-if (process.platform === 'win32') {
-  for (const shell of ['pwsh', 'powershell']) {
-    const psResult = run(shell, [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      psGate,
-      ...args,
-    ]);
-    if (finish(psResult) !== false) {
-      process.exit(1);
-    }
-  }
-}
-
-process.stderr.write(
-  "agent-done-or-not: no supported shell found. Install bash, or on Windows install/use PowerShell.\n"
-);
-process.exit(127);
+forwardToGate(bashGate, psGate, args);

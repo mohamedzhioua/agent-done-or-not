@@ -272,6 +272,87 @@ try {
         Deny "latest proof is older than ${ttl}s (stale) - run your check again"
     }
 
+    # --- required-checks policy: the Stop gate must be as strict as `assert` ---
+    # If a policy file exists, EVERY required label must have a fresh passing
+    # receipt. Delegate to done-gate.ps1 assert (single source of truth); FAIL
+    # CLOSED if a policy is present but cannot be evaluated.
+    $root = Get-Root
+    $policyFile = ''
+    if ($env:AGENT_DONE_POLICY) {
+        $policyFile = $env:AGENT_DONE_POLICY
+    } elseif ($root -and (Test-Path -LiteralPath (Join-Path $root 'agent-done.json'))) {
+        $policyFile = (Join-Path $root 'agent-done.json')
+    }
+    if ($policyFile -and (Test-Path -LiteralPath $policyFile)) {
+        $gate = Join-Path $script:SCRIPT_DIR 'done-gate.ps1'
+        if (-not (Test-Path -LiteralPath $gate)) {
+            Deny "policy $policyFile present but done-gate.ps1 is not next to stop-gate.ps1 - cannot verify required checks"
+        }
+        $psExe = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $prevDir = $env:AGENT_DONE_DIR; $prevTtl = $env:AGENT_DONE_TTL
+        $env:AGENT_DONE_DIR = $proofDir; $env:AGENT_DONE_TTL = [string]$ttl
+        # The delegated assert writes progress to stderr; under Windows PowerShell
+        # 5.1 with EAP=Stop that stderr would raise a NativeCommandError (a false
+        # "block"), so drop to Continue for the native call and rely on
+        # $LASTEXITCODE for the real verdict.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $psExe -NoProfile -ExecutionPolicy Bypass -File $gate assert --policy $policyFile > $null 2>&1
+            $assertRc = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEap
+            # Faithful restore: coercing $null into an env var yields '' rather than
+            # a true unset, so remove it when it was previously unset.
+            if ($null -eq $prevDir) { Remove-Item Env:AGENT_DONE_DIR -ErrorAction SilentlyContinue } else { $env:AGENT_DONE_DIR = $prevDir }
+            if ($null -eq $prevTtl) { Remove-Item Env:AGENT_DONE_TTL -ErrorAction SilentlyContinue } else { $env:AGENT_DONE_TTL = $prevTtl }
+        }
+        if ($assertRc -ne 0) {
+            Deny "required checks in $(Split-Path -Leaf $policyFile) are not all fresh & passing - run every required check, then finish"
+        }
+    }
+
+    # --- state binding: a passing receipt captured against different code -------
+    # Advisory by default; set AGENT_DONE_BIND_STATE=1 to make drift a hard block.
+    # Uses the receipt's RECORDED commit/dirty (not a fresh status) so a proof
+    # captured against a dirty tree is not re-flagged; only a new commit or edits
+    # after a CLEAN capture count. In hard mode a receipt with no commit binding
+    # is itself drift.
+    $bindState = ($env:AGENT_DONE_BIND_STATE -eq '1')
+    $recCommit = Rec-Field $lastLine '"commit":"([0-9a-f]*)"'
+    $recDirty = Rec-Field $lastLine '"dirty":(true|false)'
+    if ($root) {
+        # Native `git` under WinPS 5.1 + EAP=Stop can throw on any stderr; drop to
+        # Continue and rely on $LASTEXITCODE, same as the policy delegation above.
+        $prevEapD = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $headCommit = ''
+        try {
+            $headCommit = (& git -C $root rev-parse HEAD 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $headCommit) { $headCommit = ([string]$headCommit).Trim() } else { $headCommit = '' }
+        } catch { $headCommit = '' }
+        $drift = ''
+        if ($headCommit) {
+            if ([string]::IsNullOrEmpty($recCommit)) {
+                if ($bindState) { $drift = 'receipt has no commit binding (captured before state binding or outside git)' }
+            } elseif ($recCommit -ne $headCommit) {
+                $drift = "proof captured at $($recCommit.Substring(0, [Math]::Min(7, $recCommit.Length))) but HEAD is now $($headCommit.Substring(0, [Math]::Min(7, $headCommit.Length)))"
+            } elseif ($recDirty -eq 'false') {
+                $porcelain = ''
+                try { $porcelain = (& git -C $root status --porcelain 2>$null) } catch { $porcelain = '' }
+                if ($porcelain) { $drift = 'working tree changed since the (clean) proof was captured' }
+            }
+        }
+        $ErrorActionPreference = $prevEapD
+        if ($drift) {
+            if ($bindState) {
+                Deny "$drift (AGENT_DONE_BIND_STATE=1) - re-run your check against the current code"
+            } else {
+                Write-Stderr "stop-gate: WARNING - $drift - proof may not reflect the current code"
+            }
+        }
+    }
+
     $count = $allLines.Count
     $token = $run + ':' + $count
     $consumedFile = Join-Path $script:GATE_DIR 'consumed'
@@ -294,5 +375,11 @@ try {
 
     Allow "verified by a fresh passing receipt (sha256=$sha)"
 } catch {
-    Deny ('unexpected error: ' + $_.Exception.Message)
+    try {
+        Deny ('unexpected error: ' + $_.Exception.Message)
+    } catch {
+        # Deny must never leak a non-blocking exit code; fail closed as a last resort.
+        try { [Console]::Error.WriteLine('stop-gate: BLOCKED - fatal error in gate') } catch {}
+        exit 2
+    }
 }

@@ -16,3 +16,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run tests
         run: bash tests/run.sh
+
+  windows:
+    name: windows tests (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # powershell = Windows PowerShell 5.1 (the enterprise/CI default that the
+        # UTF-8-no-BOM encoding bug broke); pwsh = PowerShell 7+.
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell parity tests (${{ matrix.shell }})
+        run: ${{ matrix.shell }} -NoProfile -ExecutionPolicy Bypass -File tests/run.ps1
+      - name: npm wrapper smoke (Windows path / WSL-bash fallback)
+        shell: pwsh
+        run: |
+          node bin/agent-done-or-not.js capture --label ci -- node -e "process.exit(0)"
+          node bin/agent-done-or-not.js assert --label ci --ttl 0

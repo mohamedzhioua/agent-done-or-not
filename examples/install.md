@@ -155,6 +155,13 @@ export AGENT_DONE_OFF=1
 | `AGENT_DONE_ALLOWED_COMMANDS` | unset | Regex the recorded command must match for `assert` to accept a receipt (same as `--allow-command-regex`). |
 | `AGENT_DONE_DIR` | `<repo>/.agent-proof` | Where receipts are stored. |
 | `AGENT_DONE_SESSION` | unset | If your harness exports a session id, receipts segregate per session. |
+| `AGENT_DONE_BIND_STATE` | unset | Set to `1` to turn a git commit/tree/dirty mismatch against the newest passing receipt into a hard failure/block instead of an advisory warning. |
+
+> **Note:** a receipt records the command's exit state at the moment it exits —
+> not async/background work that finishes later, so use a check that waits.
+> Receipts are also bound to the git commit/tree at capture time; set
+> `AGENT_DONE_BIND_STATE=1` above for hard enforcement (e.g. against a stale CI
+> cache).
 
 ## Gate CI / pre-commit with `assert`
 
