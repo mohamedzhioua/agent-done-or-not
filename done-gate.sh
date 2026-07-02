@@ -238,11 +238,18 @@ cmd_capture() {
   local sha; sha="$(sha256_of_file "$log")"
   local commit tree dirty
   commit="$(git_commit)"; tree="$(git_tree)"; dirty="$(git_dirty)"
+  # Provenance: was this captured by a CI runner, and against which ref? A verify
+  # job re-captures fresh from pinned code, so ci=true marks a receipt CI produced
+  # itself (vs one an agent committed). ref records the branch/PR ref under test.
+  local ci="false" ref
+  if [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ]; then ci="true"; fi
+  ref="${GITHUB_REF:-}"
   local receipt
-  receipt="$(printf '{"label":"%s","command":"%s","exit_code":%s,"sha256":"%s","log":"%s","at":"%s","epoch":%s,"session":"%s","commit":"%s","tree":"%s","dirty":%s}' \
+  receipt="$(printf '{"label":"%s","command":"%s","exit_code":%s,"sha256":"%s","log":"%s","at":"%s","epoch":%s,"session":"%s","commit":"%s","tree":"%s","dirty":%s,"schema_version":1,"ci":%s,"ref":"%s"}' \
     "$(json_escape "$label")" "$(json_escape "${CMD[*]}")" "$rc" "$sha" \
     "$(json_escape "${log#"$ROOT/"}")" "$(timestamp)" "$(epoch)" \
-    "$(json_escape "${AGENT_DONE_SESSION:-}")" "$(json_escape "$commit")" "$(json_escape "$tree")" "$dirty")"
+    "$(json_escape "${AGENT_DONE_SESSION:-}")" "$(json_escape "$commit")" "$(json_escape "$tree")" "$dirty" \
+    "$ci" "$(json_escape "$ref")")"
   printf '%s\n' "$receipt" >> "$dir/ledger.jsonl"
 
   printf '%s\n' "$run" > "$PROOF_DIR/latest.$$.tmp" && mv -f "$PROOF_DIR/latest.$$.tmp" "$PROOF_DIR/latest"

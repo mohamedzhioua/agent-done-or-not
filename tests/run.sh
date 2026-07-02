@@ -679,6 +679,100 @@ rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
        printf '%s' "$PAYLOAD" | AGENT_DONE_BIND_STATE=1 bash "$STOP_GATE" >/dev/null 2>&1; printf '%s' "$?" )"
 [ "$rc" = "2" ] && ok "stop-gate blocks on drift when AGENT_DONE_BIND_STATE=1" || bad "stop-gate bind-state (got $rc)"
 
+echo "== receipt provenance (v0.10) =="
+
+# PV1. a LOCAL capture stamps schema_version:1, ci:false and an empty ref.
+# Clear CI env so this passes identically whether run locally or inside CI.
+d="$(newsandbox)"
+( cd "$d" && env -u CI -u GITHUB_ACTIONS -u GITHUB_REF bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
+line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
+if printf '%s' "$line" | grep -q '"schema_version":1' \
+   && printf '%s' "$line" | grep -q '"ci":false' \
+   && printf '%s' "$line" | grep -q '"ref":""'; then
+  ok "local capture stamps schema_version:1, ci:false, empty ref"
+else bad "provenance: local receipt (got: $line)"; fi
+
+# PV2. a CI capture (GITHUB_ACTIONS + GITHUB_REF set) stamps ci:true and the ref.
+d="$(newsandbox)"
+( cd "$d" && GITHUB_ACTIONS=true GITHUB_REF=refs/pull/7/merge bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
+line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
+if printf '%s' "$line" | grep -q '"ci":true' \
+   && printf '%s' "$line" | grep -q '"ref":"refs/pull/7/merge"'; then
+  ok "CI capture stamps ci:true and the ref under test"
+else bad "provenance: CI receipt (got: $line)"; fi
+
+# PV3. CI detection also fires on a bare CI=1 (not just GITHUB_ACTIONS).
+d="$(newsandbox)"
+( cd "$d" && env -u GITHUB_ACTIONS CI=1 bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
+line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
+printf '%s' "$line" | grep -q '"ci":true' \
+  && ok "CI=1 alone marks the receipt ci:true" || bad "provenance: CI=1 detection (got: $line)"
+
+# PV4. the proof schema documents the new provenance fields.
+if grep -q '"schema_version"' "$REPO/proof.schema.json" \
+   && grep -q '"ci"' "$REPO/proof.schema.json" \
+   && grep -q '"ref"' "$REPO/proof.schema.json"; then
+  ok "proof.schema.json documents schema_version, ci and ref"
+else bad "proof.schema.json missing provenance fields"; fi
+
+echo "== action verify mode (v0.10) =="
+
+# AV1. action.yml declares mode: verify plumbing (checks input + gated step).
+if grep -Eq "if: \\\$\{\{ inputs.mode == 'verify' \}\}" "$REPO/action.yml" \
+   && grep -q '^  checks:$' "$REPO/action.yml" \
+   && grep -q 'INPUT_CHECKS' "$REPO/action.yml"; then
+  ok "action.yml declares verify mode with a checks input"
+else bad "action.yml verify mode plumbing"; fi
+
+# AV2. verify re-runs each check FRESH via done-gate capture (through bash -c).
+if grep -Fq 'bash "$gate" capture --label "$label" -- bash -c "$command"' "$REPO/action.yml" \
+   && grep -Fq 'AGENT_DONE_SESSION="ci-verify-' "$REPO/action.yml"; then
+  ok "action.yml verify re-runs checks fresh in a CI-scoped run"
+else bad "action.yml verify fresh-capture wiring"; fi
+
+# AV3. verify publishes the receipt artifact + SHA in the summary.
+if grep -Fq 'uses: actions/upload-artifact@v4' "$REPO/action.yml" \
+   && grep -Fq 'CI-verified receipts' "$REPO/action.yml" \
+   && grep -Fq 'sha256' "$REPO/action.yml"; then
+  ok "action.yml verify uploads receipts + prints SHA in the summary"
+else bad "action.yml verify artifact/summary"; fi
+
+# AV4. an unsupported mode is rejected (fail closed).
+if grep -Eq "if: \\\$\{\{ inputs.mode != 'assert' && inputs.mode != 'verify' \}\}" "$REPO/action.yml"; then
+  ok "action.yml rejects an unsupported mode"
+else bad "action.yml mode guard"; fi
+
+# AV5. the self-test workflow dogfoods verify success + a really-red catch.
+if grep -q 'verify-success:' "$REPO/.github/workflows/action-selftest.yml" \
+   && grep -q 'verify-catches-red:' "$REPO/.github/workflows/action-selftest.yml" \
+   && grep -q 'steps.red_check.outcome' "$REPO/.github/workflows/action-selftest.yml"; then
+  ok "action self-test covers verify success and a really-red catch"
+else bad "action self-test verify jobs"; fi
+
+# AV6. a GitHub verify template exists for making proof-of-done a required check.
+if [ -f "$REPO/docs/ci-templates/github-verify.yml" ] \
+   && grep -q 'mode: verify' "$REPO/docs/ci-templates/github-verify.yml" \
+   && grep -q 'name: proof-of-done' "$REPO/docs/ci-templates/github-verify.yml"; then
+  ok "docs/ci-templates/github-verify.yml provides a required-check template"
+else bad "github-verify.yml template missing/malformed"; fi
+
+# AV7. FUNCTIONAL: a committed GREEN receipt is ignored — a fresh RED re-run (what
+# verify does: capture into a CI-scoped run, then assert it) fails the gate.
+d="$(newsandbox)"
+rc="$( cd "$d" \
+  && mkdir -p .agent-proof/committed \
+  && printf '{"label":"test","command":"npm test","exit_code":0,"sha256":"deadbeef","log":"x","at":"2020-01-01T00:00:00Z","epoch":1,"session":"","commit":"'"$(git rev-parse HEAD)"'","tree":"","dirty":false,"schema_version":1,"ci":false,"ref":""}\n' > .agent-proof/committed/ledger.jsonl \
+  && printf 'committed\n' > .agent-proof/latest \
+  && AGENT_DONE_SESSION=ci-verify-1 bash "$DONE_GATE" capture --label test -- false >/dev/null 2>&1
+  bash "$DONE_GATE" assert --label test >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc" = "1" ] && ok "verify flow: fresh red re-run overrides a committed green receipt" || bad "verify flow committed-green-really-red (got $rc)"
+
+# AV8. FUNCTIONAL: a genuinely fresh green re-run passes the gate.
+d="$(newsandbox)"
+rc="$( cd "$d" && AGENT_DONE_SESSION=ci-verify-1 bash "$DONE_GATE" capture --label test -- true >/dev/null 2>&1
+  bash "$DONE_GATE" assert --label test >/dev/null 2>&1; printf '%s' "$?" )"
+[ "$rc" = "0" ] && ok "verify flow: fresh green re-run passes the gate" || bad "verify flow fresh-green (got $rc)"
+
 echo
 printf 'Result: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

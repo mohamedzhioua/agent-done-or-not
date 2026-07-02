@@ -52,6 +52,18 @@
     "dirty": {
       "type": "boolean",
       "description": "Whether the working tree had uncommitted changes (git status --porcelain non-empty) at capture time."
+    },
+    "schema_version": {
+      "type": "integer",
+      "description": "Receipt format version. 1 introduced provenance (ci, ref). Absent on receipts captured before v0.10.0; readers treat absence as version 0."
+    },
+    "ci": {
+      "type": "boolean",
+      "description": "True when captured by a CI runner (GITHUB_ACTIONS or CI env set). A CI-verified receipt (ci:true) was produced by the pinned Action re-running the check, not committed by an agent."
+    },
+    "ref": {
+      "type": "string",
+      "description": "The git ref under test at capture time (GITHUB_REF); empty outside CI. Records which branch/PR the CI verification ran against."
     }
   }
 }

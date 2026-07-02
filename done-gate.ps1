@@ -386,10 +386,15 @@ function Cmd-Capture {
     $gitCommit = Get-GitCommit
     $gitTree = Get-GitTree
     $gitDirty = Get-GitDirty
-    $receipt = ('{{"label":"{0}","command":"{1}","exit_code":{2},"sha256":"{3}","log":"{4}","at":"{5}","epoch":{6},"session":"{7}","commit":"{8}","tree":"{9}","dirty":{10}}}' -f `
+    # Provenance: was this captured by a CI runner, and against which ref? Mirrors
+    # done-gate.sh so the receipt JSON stays byte-identical across engines.
+    $ci = if ($env:GITHUB_ACTIONS -or $env:CI) { 'true' } else { 'false' }
+    $ref = if ($env:GITHUB_REF) { $env:GITHUB_REF } else { '' }
+    $receipt = ('{{"label":"{0}","command":"{1}","exit_code":{2},"sha256":"{3}","log":"{4}","at":"{5}","epoch":{6},"session":"{7}","commit":"{8}","tree":"{9}","dirty":{10},"schema_version":1,"ci":{11},"ref":"{12}"}}' -f `
         (Json-Escape $label), (Json-Escape (Command-Text $cmd)), $rc, $sha, `
         (Json-Escape $logRel), $at, $epoch, (Json-Escape $env:AGENT_DONE_SESSION), `
-        (Json-Escape $gitCommit), (Json-Escape $gitTree), $gitDirty)
+        (Json-Escape $gitCommit), (Json-Escape $gitTree), $gitDirty, `
+        $ci, (Json-Escape $ref))
     Append-TextLine (Join-Path $dir 'ledger.jsonl') $receipt
 
     $tmp = Join-Path $script:PROOF_DIR ('latest.' + $PID + '.tmp')

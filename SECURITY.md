@@ -17,12 +17,18 @@ The latest tagged release and `main` are supported. Older tags are not patched.
   fresh passing receipt.
 - Making `capture` record a passing (`exit_code: 0`) receipt for a command that
   actually failed.
+- Making the Action's `mode: verify` report success when a freshly re-run check
+  actually failed — for example, a committed `.agent-proof/` receipt influencing
+  the verdict instead of being ignored.
 - Path traversal or command injection via `--run` / `--label` / a crafted
   payload or ledger.
 
 Out of scope (documented limits, see the README threat model): choosing a weak
-check yourself, or an agent that can already freely rewrite files in
-`.agent-proof/`.
+check yourself; an agent that can already freely rewrite files in `.agent-proof/`
+(CI `mode: verify` re-runs the checks, so a committed forgery is ignored there);
+a weakened but human-reviewed CI config or required-check setting; and fork PRs
+being unable to post a Check Run / comment (the verify job still fails on a red
+check, which is enough to gate).
 
 ## How to report
 

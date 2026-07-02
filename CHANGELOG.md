@@ -6,6 +6,43 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-02
+
+The CI-verified-receipts release. Until now the GitHub Action ran only
+`mode: assert`, which **trusts the receipts the branch committed** — so an agent
+that wants to look done could commit a fabricated passing receipt and CI would
+believe it. v0.10.0 adds `mode: verify`, which ignores committed receipts and
+**re-runs your checks fresh** from the pinned Action code, then fails the job on a
+red result. Make `proof-of-done` a required status check and a lie can't merge.
+
+### Added
+- **Action `mode: verify`** — re-runs the checks listed in a `checks:` block (one
+  `label: command` per line, each via `bash -c`) **fresh** at the PR commit,
+  ignoring any committed `.agent-proof/`. Fails the job on any red check
+  (**job-as-gate**). Each fresh receipt's SHA-256 and the verified commit are
+  written to the job summary, and `.agent-proof/` is uploaded as an artifact.
+  `mode: assert` is unchanged; an unsupported mode fails closed.
+- **Receipt provenance** — `capture` now stamps `schema_version` (1), `ci`
+  (`true` when `GITHUB_ACTIONS`/`CI` is set), and `ref` (from `GITHUB_REF`) into
+  every receipt, so a CI-produced receipt is distinguishable from an
+  agent-committed one. Additive and backward compatible — see the extended
+  [`proof.schema.json`](proof.schema.json). Stamped byte-identically by both the
+  bash and PowerShell engines.
+- **GitHub required-check template** —
+  [`docs/ci-templates/github-verify.yml`](docs/ci-templates/github-verify.yml), a
+  copy-paste `proof-of-done` workflow, plus a README section on wiring it as a
+  required status check under branch protection.
+
+### Security
+- **Closes the committed-forgery gap for same-repo PRs.** With `mode: verify`, a
+  hand-written green receipt cannot survive a red re-run — CI overwrites it with
+  what actually happened. Documented limits remain (a human-reviewed weakening of
+  the CI config, and fork PRs that can't post a Check Run but whose job still
+  fails on red) — see the updated threat model and [SECURITY.md](SECURITY.md).
+- `verify` asserts by **explicit label against the CI-scoped run only**, never
+  policy mode — a committed receipt with a forged large `epoch` cannot outrank the
+  fresh capture in a global search.
+
 ## [0.9.0] — 2026-07-02
 
 The state-bound-trust release. v0.8.0 defined *what counts as done*; v0.9.0 binds
