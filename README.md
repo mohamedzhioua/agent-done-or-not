@@ -5,6 +5,7 @@
 [![Agent Skill](https://img.shields.io/badge/agent_skill-done--or--not-black?style=for-the-badge)](https://skills.sh/mohamedzhioua/agent-done-or-not)
 
 [![CI](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml/badge.svg)](https://github.com/mohamedzhioua/agent-done-or-not/actions/workflows/test.yml)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Agent_Done_Or_Not-2ea44f?logo=github)](https://github.com/marketplace/actions/agent-done-or-not)
 [![npm](https://img.shields.io/npm/v/agent-done-or-not?logo=npm)](https://www.npmjs.com/package/agent-done-or-not)
 [![Release](https://img.shields.io/github/v/tag/mohamedzhioua/agent-done-or-not?label=release)](https://github.com/mohamedzhioua/agent-done-or-not/releases)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)
