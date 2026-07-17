@@ -770,13 +770,14 @@ try {
     Bad 'control-char JSON escaping (receipt did not parse as JSON)'
 }
 
-# 26. host_os is the canonical 'windows' on the PowerShell engine — parity with
-# done-gate.sh, which also resolves Git Bash to 'windows' on the same machine.
+# 26. host_os is a canonical, engine-portable value (never a raw uname). This
+# suite runs under pwsh on Windows, Linux and macOS, so assert membership in the
+# shared vocabulary rather than a single OS — mirrors done-gate.sh's EV9.
 $d = New-GitSandbox
 $r = Invoke-Gate $d (@('capture', '--label', 'os', '--') + (PassingCommand))
 $receipt = Latest-Receipt $r.ProofDir
-if ($receipt.host_os -eq 'windows') {
-    Ok 'host_os is the canonical windows value on the PowerShell engine'
+if (@('linux', 'darwin', 'windows') -contains $receipt.host_os) {
+    Ok 'host_os is a canonical, engine-portable value'
 } else {
     Bad "host_os canonicalization (got $($receipt.host_os))"
 }
