@@ -16,6 +16,8 @@
 # ATTEMPT/REF). Exits 0 only if EVERY declared check was re-run fresh and passed.
 set -uo pipefail
 
+CI_VERIFY_VERSION="0.11.0"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="${AGENT_DONE_GATE:-$HERE/done-gate.sh}"
 
@@ -40,6 +42,7 @@ esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 # A CI-run-scoped run id so EVERY fresh capture lands in ONE ledger that a single
 # `assert --run <this> --label ...` reads — never the mutable `latest` pointer.
 export AGENT_DONE_SESSION="ci-verify-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+export AGENT_DONE_VERIFIER="ci-verify.sh@$CI_VERIFY_VERSION"
 
 # Resolve the proof dir exactly as done-gate.sh does (respecting an override).
 root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"

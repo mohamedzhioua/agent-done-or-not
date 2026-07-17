@@ -36,6 +36,8 @@
 # ledger is hand-written JSONL. No network, no LLM, no extra tooling.
 set -euo pipefail
 
+GATE_VERSION="0.11.0"
+
 normalize_path() {
   case "$1" in
     [A-Za-z]:/*)
@@ -74,6 +76,24 @@ run_stamp() { date -u +%Y%m%dT%H%M%SZ 2>/dev/null || printf 'run'; }
 git_commit() { git rev-parse HEAD 2>/dev/null || printf ''; }
 git_tree()   { git rev-parse 'HEAD^{tree}' 2>/dev/null || printf ''; }
 git_dirty()  { [ -n "$(git status --porcelain 2>/dev/null)" ] && printf 'true' || printf 'false'; }
+git_repo() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { printf ''; return; }
+  git config --get remote.origin.url 2>/dev/null || printf ''
+}
+git_subject() { git log -1 --format=%s 2>/dev/null || printf ''; }
+# Canonical host OS identity, so bash and the PowerShell port agree on the SAME
+# vocabulary for the same machine. uname reports Git Bash as MINGW*/MSYS*, which
+# is a Windows host — collapse those (and any *NT*) to 'windows'.
+host_os() {
+  local os
+  os="$(uname -s 2>/dev/null || true)"
+  case "$os" in
+    Linux*)                             printf 'linux' ;;
+    Darwin*)                            printf 'darwin' ;;
+    MINGW*|MSYS*|CYGWIN*|Windows*|*NT*) printf 'windows' ;;
+    *)                                  printf 'unknown' ;;
+  esac
+}
 
 sha256_of_file() {
   local f="$1" c py=""
@@ -94,9 +114,13 @@ PY
   fi
 }
 
-# Minimal JSON string escaper for label/command/path fields.
+# Minimal JSON string escaper for label/command/path fields. Escapes backslash
+# and double-quote, then flattens EVERY C0 control character (U+0000–U+001F,
+# which includes newline, CR, tab, form-feed, vertical-tab, backspace, …) to a
+# space — raw control bytes are forbidden inside a JSON string, so this keeps the
+# hand-built JSONL line parseable no matter what a commit subject or URL contains.
 json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n\r\t' '   '
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | LC_ALL=C tr '\000-\037' ' '
 }
 
 resolve_run_for_read() {
@@ -114,6 +138,24 @@ rec_sha()     { printf '%s' "$1" | grep -oE '"sha256":"[0-9a-f]+"' | head -n1 | 
 rec_command() { printf '%s' "$1" | sed -E 's/.*"command":"(.*)","exit_code":.*/\1/'; }
 rec_commit()  { printf '%s' "$1" | grep -oE '"commit":"[0-9a-f]*"' | head -n1 | sed -E 's/.*"([0-9a-f]*)".*/\1/'; }
 rec_dirty()   { printf '%s' "$1" | grep -oE '"dirty":(true|false)' | head -n1 | sed -E 's/.*:(true|false)/\1/'; }
+rec_schema()  { printf '%s' "$1" | grep -oE '"schema_version":[0-9]+' | head -n1 | grep -oE '[0-9]+'; }
+rec_disp()    { printf '%s' "$1" | grep -oE '"disposition":"[a-z]+"' | head -n1 | sed -E 's/.*"([a-z]+)".*/\1/'; }
+
+# An EXECUTION receipt is the only thing that can satisfy a gate. v0/v1 receipts
+# (no schema_version, or schema_version < 2) predate the disposition field and are
+# accepted as before. A schema_version>=2 line is proof ONLY when its disposition
+# is "reexecuted"; an "asserted" or "unparsed" record is a CLAIM/VERDICT record
+# that must never be counted as a re-run check. Returns 0 (proof) / 1 (not proof).
+# Fails CLOSED: anything a v2 line records other than reexecuted is not proof.
+is_execution_receipt() {
+  local sv disp
+  sv="$(rec_schema "$1")"; disp="$(rec_disp "$1")"
+  if [ -n "$sv" ] && [ "$sv" -ge 2 ] 2>/dev/null; then
+    [ "$disp" = "reexecuted" ]
+  else
+    return 0
+  fi
+}
 
 # Compare a receipt's RECORDED git state to the working tree NOW. Echoes a short
 # human reason if the proof no longer matches the code, else nothing. It uses the
@@ -236,8 +278,13 @@ cmd_capture() {
   set -e
 
   local sha; sha="$(sha256_of_file "$log")"
-  local commit tree dirty
+  local commit tree dirty repo subject producer verifier os disposition
   commit="$(git_commit)"; tree="$(git_tree)"; dirty="$(git_dirty)"
+  repo="$(git_repo)"; subject="$(git_subject)"
+  producer="done-gate.sh@$GATE_VERSION"
+  verifier="${AGENT_DONE_VERIFIER:-}"
+  os="$(host_os)"
+  disposition="reexecuted"
   # Provenance: was this captured by a CI runner, and against which ref? A verify
   # job re-captures fresh from pinned code, so ci=true marks a receipt CI produced
   # itself (vs one an agent committed). ref records the branch/PR ref under test.
@@ -245,11 +292,12 @@ cmd_capture() {
   if [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ]; then ci="true"; fi
   ref="${GITHUB_REF:-}"
   local receipt
-  receipt="$(printf '{"label":"%s","command":"%s","exit_code":%s,"sha256":"%s","log":"%s","at":"%s","epoch":%s,"session":"%s","commit":"%s","tree":"%s","dirty":%s,"schema_version":1,"ci":%s,"ref":"%s"}' \
+  receipt="$(printf '{"label":"%s","command":"%s","exit_code":%s,"sha256":"%s","log":"%s","at":"%s","epoch":%s,"session":"%s","commit":"%s","tree":"%s","dirty":%s,"schema_version":2,"ci":%s,"ref":"%s","repo":"%s","subject":"%s","producer":"%s","verifier":"%s","host_os":"%s","disposition":"%s"}' \
     "$(json_escape "$label")" "$(json_escape "${CMD[*]}")" "$rc" "$sha" \
     "$(json_escape "${log#"$ROOT/"}")" "$(timestamp)" "$(epoch)" \
     "$(json_escape "${AGENT_DONE_SESSION:-}")" "$(json_escape "$commit")" "$(json_escape "$tree")" "$dirty" \
-    "$ci" "$(json_escape "$ref")")"
+    "$ci" "$(json_escape "$ref")" "$(json_escape "$repo")" "$(json_escape "$subject")" \
+    "$(json_escape "$producer")" "$(json_escape "$verifier")" "$(json_escape "$os")" "$(json_escape "$disposition")")"
   printf '%s\n' "$receipt" >> "$dir/ledger.jsonl"
 
   printf '%s\n' "$run" > "$PROOF_DIR/latest.$$.tmp" && mv -f "$PROOF_DIR/latest.$$.tmp" "$PROOF_DIR/latest"
@@ -348,21 +396,23 @@ EOF
 
   local now; now="$(epoch)"
   local bind_state="${AGENT_DONE_BIND_STATE:-0}"
-  local overall=0 checks="" first=1 idx=0 lbl lrx line ec ep sha cmd fresh cmd_ok line_ok
+  local overall=0 checks="" first=1 idx=0 lbl lrx line ec ep sha cmd fresh cmd_ok line_ok is_exec
   local any_pass=0 weak_only=1 warn_label="" drift="" drift_warn=""
   for lbl in "${LABELS[@]}"; do
     lrx="${LABEL_REGEXES[$idx]:-}"; idx=$((idx + 1))
     if [ "$policy_mode" = "1" ]; then line="$(latest_for_label_global "$lbl")"; else line="$(latest_for_label "$ledger" "$lbl")"; fi
-    ec=""; ep=""; sha=""; cmd=""; fresh="false"; cmd_ok="true"; line_ok="false"; drift=""
+    ec=""; ep=""; sha=""; cmd=""; fresh="false"; cmd_ok="true"; line_ok="false"; drift=""; is_exec="true"
     if [ -n "$line" ]; then
       ec="$(rec_exit "$line" || true)"; ep="$(rec_epoch "$line" || true)"
       sha="$(rec_sha "$line" || true)"; cmd="$(rec_command "$line" || true)"
+      # A committed claim/verdict record (disposition!=reexecuted) is not proof.
+      is_execution_receipt "$line" || is_exec="false"
       if [ "${ttl:-0}" -le 0 ] 2>/dev/null; then fresh="true"
       elif [ -n "$ep" ] && [ "$now" -gt 0 ] 2>/dev/null && [ "$((now - ep))" -le "$ttl" ] 2>/dev/null; then fresh="true"; fi
       if [ -n "$lrx" ]; then
         if printf '%s' "$cmd" | grep -Eq "$lrx" 2>/dev/null; then cmd_ok="true"; else cmd_ok="false"; fi
       fi
-      if [ "$ec" = "0" ] && [ "$fresh" = "true" ] && [ "$cmd_ok" = "true" ]; then line_ok="true"; fi
+      if [ "$ec" = "0" ] && [ "$fresh" = "true" ] && [ "$cmd_ok" = "true" ] && [ "$is_exec" = "true" ]; then line_ok="true"; fi
       # State binding: a passing receipt captured against different code is stale.
       if [ "$line_ok" = "true" ]; then
         drift="$(state_drift_reason "$line" "$bind_state" || true)"
@@ -390,6 +440,9 @@ EOF
       else
         printf 'done-gate: assert FAIL label=%s found=%s exit=%s fresh=%s command_allowed=%s\n' \
           "$lbl" "$([ -n "$line" ] && echo yes || echo no)" "${ec:-?}" "$fresh" "$cmd_ok" >&2
+        if [ -n "$line" ] && [ "$is_exec" = "false" ]; then
+          printf 'done-gate: assert FAIL label=%s — receipt is a claim/verdict record (disposition!=reexecuted), not a re-executed check\n' "$lbl" >&2
+        fi
       fi
     fi
   done
@@ -431,8 +484,12 @@ cmd_verify() {
   local ledger="$PROOF_DIR/$run/ledger.jsonl"
   [ -f "$ledger" ] || die "verify: no ledger at $ledger"
 
-  local got
-  got="$(latest_for_label "$ledger" "$label" | grep -oE '"sha256":"[0-9a-f]+"' | sed -E 's/"sha256":"([0-9a-f]+)"/\1/')"
+  local vline got
+  vline="$(latest_for_label "$ledger" "$label")"
+  # A claim/verdict record (disposition!=reexecuted) is not execution evidence,
+  # so its recorded hash must never verify as a re-run output.
+  is_execution_receipt "$vline" || vline=""
+  got="$(printf '%s' "$vline" | grep -oE '"sha256":"[0-9a-f]+"' | sed -E 's/"sha256":"([0-9a-f]+)"/\1/')"
   local ok="false"
   [ -n "$got" ] && [ "$got" = "$sha" ] && ok="true"
 

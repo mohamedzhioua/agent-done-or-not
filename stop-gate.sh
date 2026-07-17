@@ -151,6 +151,15 @@ rec_epoch="$(printf '%s' "$last_line" | grep -oE '"epoch":[0-9]+' | head -n1 | g
 [ -n "$sha" ]       || deny "most recent receipt is unparseable (no sha256)"
 [ -n "$rec_epoch" ] || deny "most recent receipt is unparseable (no epoch)"
 
+# A schema_version>=2 receipt is proof ONLY when disposition=reexecuted. An
+# "asserted"/"unparsed" record is a CLAIM/VERDICT record — it can never satisfy
+# the gate. v0/v1 receipts (no disposition) predate this field and are unaffected.
+rec_schema="$(printf '%s' "$last_line" | grep -oE '"schema_version":[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
+rec_disp="$(printf '%s' "$last_line" | grep -oE '"disposition":"[a-z]+"' | head -n1 | sed -E 's/.*"([a-z]+)".*/\1/' || true)"
+if [ -n "$rec_schema" ] && [ "$rec_schema" -ge 2 ] 2>/dev/null && [ "$rec_disp" != "reexecuted" ]; then
+  deny "most recent receipt is a claim/verdict record (disposition=${rec_disp:-none}) — an asserted claim cannot satisfy the gate"
+fi
+
 # --- loop-guard awareness (informational, not a bypass) -----------------------
 # stop_hook_active just tells us this is a retry; the retry COUNTER (in deny)
 # does the loop protection. We never short-circuit to allow on this flag.

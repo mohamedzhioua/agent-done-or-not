@@ -54,6 +54,16 @@ with the command's own code, **a failing check can't be dressed up as success.**
 | Cross-tool | per-tool prose | one engine for Claude, Cursor, Codex |
 | Dependencies | — | none (`bash` + `git` + sha) |
 
+## Which tool does what?
+
+These complementary tools cover different parts of the agent trust boundary:
+
+| tool | job |
+|---|---|
+| agent-done-or-not | evidence capture, done-gating, claim auditing, PR verification |
+| proofguard | repo-policy guards |
+| rulesentry | rules-file supply-chain security |
+
 ## Install (60 seconds)
 
 From the repo you want to protect:
@@ -238,8 +248,16 @@ npx agent-done-or-not report --format markdown
 ```
 
 ```json
-{"label":"test","command":"npm test","exit_code":0,"sha256":"9f2c…","log":".agent-proof/…/test.log","at":"2026-06-21T19:44:00Z","epoch":1781034240,"session":""}
+{"label":"test","command":"npm test","exit_code":0,"sha256":"9f2c…","log":".agent-proof/…/test.log","at":"2026-07-16T19:44:00Z","epoch":1784231040,"session":"","commit":"0123456789abcdef0123456789abcdef01234567","tree":"89abcdef0123456789abcdef0123456789abcdef","dirty":false,"schema_version":2,"ci":false,"ref":"","repo":"https://github.com/example/project.git","subject":"Add verification tests","producer":"done-gate.sh@0.11.0","verifier":"","host_os":"linux","disposition":"reexecuted"}
 ```
+
+The v2 evidence envelope adds repository and commit identity (`repo`, `subject`),
+producer and verifier identity (`producer`, `verifier`), the capture environment
+(`host_os`, one of `linux`/`darwin`/`windows`/`unknown` — identical across the
+bash and PowerShell engines on the same machine), and the evidence `disposition`.
+`capture` always writes `disposition: "reexecuted"` because it runs the recorded
+command; `assert`, `verify`, and the Stop gate reject any v2 receipt whose
+`disposition` is anything else, so an asserted claim can never pass as a re-run.
 
 See [`examples/proof.jsonl`](examples/proof.jsonl) for a full ledger sample.
 
@@ -368,6 +386,14 @@ set `pr-comment: "true"`.
    before your last edit" or stale-CI-cache gap — prints an advisory warning by
    default; set `AGENT_DONE_BIND_STATE=1` to turn that warning into a hard
    failure/block.
+
+EXECUTION receipts are the re-run evidence stored in `ledger.jsonl` with
+`disposition=reexecuted` ([`proof.schema.json`](proof.schema.json)). CLAIM/VERDICT
+records (`asserted`/`unparsed`) live in a **separate file**
+([`claim.schema.json`](claim.schema.json)), so they are structurally distinct from
+execution proof. An asserted claim can never satisfy `assert`, `verify`, or the
+Stop gate: those readers consume only `ledger.jsonl`, and they additionally fail
+closed on any `schema_version>=2` line whose `disposition` is not `reexecuted`.
 
 **It fails closed.** Once a stop is being gated, any missing, empty, unparseable,
 or stale proof state *blocks*. The only ways past are a verified passing receipt,

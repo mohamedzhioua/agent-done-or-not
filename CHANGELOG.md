@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-17
+
+The versioned-evidence-envelope release. This change is strictly additive — old
+receipts (v0 and v1) keep working with `assert`, `verify`, Stop gates, reports,
+and hash verification.
+
+### Added
+- **Schema version 2 evidence envelope** for EXECUTION receipts, adding repository
+  and commit-subject identity (`repo`, `subject`), producer/verifier identity
+  (`producer`, `verifier`), host OS (`host_os`), and the `reexecuted`
+  `disposition` to both capture engines in an interchangeable flat JSONL format.
+- **Structural separation of execution vs. claim/verdict records.** EXECUTION
+  receipts (`disposition=reexecuted`) live in `ledger.jsonl` and follow
+  `proof.schema.json`; CLAIM/VERDICT records (`asserted`/`unparsed`) live in a
+  separate file and follow the new **`claim.schema.json`**. So an asserted claim
+  can never be rendered as a re-executed check.
+- **Tool responsibility matrix** in the README for `agent-done-or-not`,
+  `proofguard`, and `rulesentry`.
+
+### Hardened
+- **Readers reject asserted claims as proof (defense in depth).** `assert`,
+  `verify`, and the Stop gate now fail closed on any `schema_version>=2`
+  ledger line whose `disposition` is not `reexecuted`, so even a hand-planted
+  `asserted` line in `ledger.jsonl` cannot satisfy a gate. v0/v1 receipts (no
+  `disposition`) are unaffected.
+- **Canonical `host_os` across engines.** Both engines now emit one of
+  `linux` / `darwin` / `windows` / `unknown` (Git Bash `MINGW*`/`MSYS*` →
+  `windows`), so a receipt is engine-portable on the same machine.
+- **Control-character-safe JSON.** Both escapers now flatten the full C0 control
+  range (U+0000–U+001F — form-feed, vertical-tab, …), not just newline/CR/tab, so
+  a commit subject or remote URL containing any control byte still produces valid
+  JSON in both engines.
+
 ## [0.10.1] — 2026-07-03
 
 Packaging/metadata patch — no engine behavior change.

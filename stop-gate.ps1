@@ -253,6 +253,16 @@ try {
     if ([string]::IsNullOrEmpty($sha)) { Deny 'most recent receipt is unparseable (no sha256)' }
     if ([string]::IsNullOrEmpty($recEpoch)) { Deny 'most recent receipt is unparseable (no epoch)' }
 
+    # A schema_version>=2 receipt is proof ONLY when disposition=reexecuted. An
+    # asserted/unparsed record is a CLAIM/VERDICT record that can never satisfy the
+    # gate. v0/v1 receipts (no disposition) predate this field and are unaffected.
+    $recSchema = Rec-Field $lastLine '"schema_version":([0-9]+)'
+    $recDisp = Rec-Field $lastLine '"disposition":"([a-z]+)"'
+    if ($recSchema -match '^[0-9]+$' -and [int]$recSchema -ge 2 -and $recDisp -ne 'reexecuted') {
+        $dispText = if ($recDisp) { $recDisp } else { 'none' }
+        Deny "most recent receipt is a claim/verdict record (disposition=$dispText) - an asserted claim cannot satisfy the gate"
+    }
+
     if ($exitCode -ne '0') { Deny "your most recent check FAILED (exit=$exitCode) - fix it, don't ship it" }
 
     $ttl = 3600
