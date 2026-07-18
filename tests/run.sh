@@ -497,7 +497,7 @@ for c in pwsh powershell pwsh.exe powershell.exe; do
   command -v "$c" >/dev/null 2>&1 && { PWSH="$c"; break; }
 done
 if [ -n "$PWSH" ]; then
-  if "$PWSH" -NoProfile -File "$PS_TESTS" >/dev/null 2>&1; then
+  if "$PWSH" -ExecutionPolicy Bypass -NoProfile -File "$PS_TESTS" >/dev/null 2>&1; then
     ok "PowerShell parity suite passes ($PWSH tests/run.ps1)"
   else bad "PowerShell parity suite ($PWSH tests/run.ps1)"; fi
 else
@@ -681,15 +681,16 @@ rc="$( cd "$d" && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1
 
 echo "== receipt provenance (v0.10) =="
 
-# PV1. a LOCAL capture stamps schema_version:1, ci:false and an empty ref.
+# PV1. a LOCAL capture stamps schema_version:2, ci:false and an empty ref.
 # Clear CI env so this passes identically whether run locally or inside CI.
 d="$(newsandbox)"
-( cd "$d" && env -u CI -u GITHUB_ACTIONS -u GITHUB_REF bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
+( cd "$d" && unset CI GITHUB_ACTIONS GITHUB_REF \
+  && bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
 line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
-if printf '%s' "$line" | grep -q '"schema_version":1' \
+if printf '%s' "$line" | grep -q '"schema_version":2' \
    && printf '%s' "$line" | grep -q '"ci":false' \
    && printf '%s' "$line" | grep -q '"ref":""'; then
-  ok "local capture stamps schema_version:1, ci:false, empty ref"
+  ok "local capture stamps schema_version:2, ci:false, empty ref"
 else bad "provenance: local receipt (got: $line)"; fi
 
 # PV2. a CI capture (GITHUB_ACTIONS + GITHUB_REF set) stamps ci:true and the ref.
@@ -703,17 +704,143 @@ else bad "provenance: CI receipt (got: $line)"; fi
 
 # PV3. CI detection also fires on a bare CI=1 (not just GITHUB_ACTIONS).
 d="$(newsandbox)"
-( cd "$d" && env -u GITHUB_ACTIONS CI=1 bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
+( cd "$d" && unset GITHUB_ACTIONS; CI=1 bash "$DONE_GATE" capture --label t -- true >/dev/null 2>&1 )
 line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
 printf '%s' "$line" | grep -q '"ci":true' \
   && ok "CI=1 alone marks the receipt ci:true" || bad "provenance: CI=1 detection (got: $line)"
 
-# PV4. the proof schema documents the new provenance fields.
+# PV4. the proof schema documents the provenance fields.
 if grep -q '"schema_version"' "$REPO/proof.schema.json" \
    && grep -q '"ci"' "$REPO/proof.schema.json" \
    && grep -q '"ref"' "$REPO/proof.schema.json"; then
   ok "proof.schema.json documents schema_version, ci and ref"
 else bad "proof.schema.json missing provenance fields"; fi
+
+echo "== evidence envelope (v0.11) =="
+
+# EV1. capture writes the flat v2 envelope, including git identity and producer.
+d="$(newsandbox)"
+( cd "$d" && git remote add origin https://example.invalid/project.git \
+  && bash "$DONE_GATE" capture --label envelope -- true >/dev/null 2>&1 )
+ledger="$(printf '%s\n' "$d"/.agent-proof/*/ledger.jsonl)"
+if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['schema_version']==2 and d['disposition']=='reexecuted'; assert d['producer']=='done-gate.sh@0.11.0'; assert d['repo']=='https://example.invalid/project.git' and d['subject']=='init'; assert isinstance(d['host_os'],str) and d['host_os']" "$ledger" >/dev/null 2>&1; then
+  ok "capture writes the v2 evidence envelope with repo, subject and producer"
+else bad "evidence envelope fields"; fi
+
+# EV2. verifier identity is copied from AGENT_DONE_VERIFIER and defaults empty.
+d="$(newsandbox)"
+( cd "$d" && AGENT_DONE_SESSION=verifier AGENT_DONE_VERIFIER=x bash "$DONE_GATE" capture --label set -- true >/dev/null 2>&1 \
+  && unset AGENT_DONE_VERIFIER \
+  && AGENT_DONE_SESSION=verifier bash "$DONE_GATE" capture --label unset -- true >/dev/null 2>&1 )
+ledger="$d/.agent-proof/verifier/ledger.jsonl"
+if python3 -c "import json,sys; xs=[json.loads(x) for x in open(sys.argv[1], encoding='utf-8') if x.strip()]; assert xs[0]['verifier']=='x' and xs[1]['verifier']==''" "$ledger" >/dev/null 2>&1; then
+  ok "capture records set and unset verifier identity"
+else bad "verifier identity"; fi
+
+# EV3. BACKCOMPAT: the complete v1 field set still satisfies every reader.
+d="$(newsandbox)"; sha='0000000000000000000000000000000000000000000000000000000000000000'
+mkdir -p "$d/.agent-proof/legacy-v1"
+printf '{"label":"legacy-v1","command":"true","exit_code":0,"sha256":"%s","log":"x","at":"2026-07-16T00:00:00Z","epoch":%s,"session":"","commit":"","tree":"","dirty":true,"schema_version":1,"ci":false,"ref":""}\n' "$sha" "$(date +%s)" > "$d/.agent-proof/legacy-v1/ledger.jsonl"
+printf 'legacy-v1\n' > "$d/.agent-proof/latest"
+( cd "$d" && bash "$DONE_GATE" assert --label legacy-v1 >/dev/null 2>&1 ); assert_rc=$?
+( cd "$d" && bash "$DONE_GATE" verify --label legacy-v1 --sha "$sha" >/dev/null 2>&1 ); verify_rc=$?
+report_rc=0
+if command -v node >/dev/null 2>&1; then
+  ( cd "$d" && node "$BIN" report --format json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['receipts'][0]['label']=='legacy-v1'" ) || report_rc=1
+fi
+stop_rc="$( cd "$d" && gate "$PAYLOAD" )"
+if [ "$assert_rc" = "0" ] && [ "$verify_rc" = "0" ] && [ "$report_rc" = "0" ] && [ "$stop_rc" = "0" ]; then
+  ok "legacy v1 receipt remains readable by assert, verify, report and stop-gate"
+else bad "legacy v1 backcompat ($assert_rc/$verify_rc/$report_rc/$stop_rc)"; fi
+
+# EV4. BACKCOMPAT: a v0 receipt without schema or git fields still works.
+d="$(newsandbox)"
+mkdir -p "$d/.agent-proof/legacy-v0"
+printf '{"label":"legacy-v0","command":"true","exit_code":0,"sha256":"%s","log":"x","at":"2026-07-16T00:00:00Z","epoch":%s,"session":""}\n' "$sha" "$(date +%s)" > "$d/.agent-proof/legacy-v0/ledger.jsonl"
+printf 'legacy-v0\n' > "$d/.agent-proof/latest"
+( cd "$d" && bash "$DONE_GATE" assert --label legacy-v0 >/dev/null 2>&1 ); assert_rc=$?
+( cd "$d" && bash "$DONE_GATE" verify --label legacy-v0 --sha "$sha" >/dev/null 2>&1 ); verify_rc=$?
+report_rc=0
+if command -v node >/dev/null 2>&1; then
+  ( cd "$d" && node "$BIN" report --format json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['receipts'][0]['label']=='legacy-v0'" ) || report_rc=1
+fi
+stop_rc="$( cd "$d" && gate "$PAYLOAD" )"
+if [ "$assert_rc" = "0" ] && [ "$verify_rc" = "0" ] && [ "$report_rc" = "0" ] && [ "$stop_rc" = "0" ]; then
+  ok "legacy v0 receipt remains readable by assert, verify, report and stop-gate"
+else bad "legacy v0 backcompat ($assert_rc/$verify_rc/$report_rc/$stop_rc)"; fi
+
+# EV5. quote/backslash characters in the commit subject remain valid JSON.
+d="$(newsandbox)"
+( cd "$d" && git commit -q --allow-empty -m 'subject "quoted" \ path' \
+  && bash "$DONE_GATE" capture --label subject -- true >/dev/null 2>&1 \
+  && bash "$DONE_GATE" assert --label subject >/dev/null 2>&1 )
+line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
+if printf '%s' "$line" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["subject"] == "subject \"quoted\" \\ path"' >/dev/null 2>&1; then
+  ok "quoted commit subject produces parseable evidence"
+else bad "commit subject JSON escaping (got: $line)"; fi
+
+# EV6. CI re-execution receipts identify ci-verify.sh as their verifier.
+d="$(newsandbox)"
+( cd "$d" && INPUT_CHECKS='test: true' AGENT_DONE_GATE="$DONE_GATE" bash "$REPO/ci-verify.sh" >/dev/null 2>&1 )
+ledger="$(printf '%s\n' "$d"/.agent-proof/*/ledger.jsonl)"
+if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['verifier']=='ci-verify.sh@0.11.0'" "$ledger" >/dev/null 2>&1; then
+  ok "ci-verify receipts carry verifier identity"
+else bad "ci-verify verifier identity"; fi
+
+# EV7. SEPARATION: a v2 ledger line whose disposition is NOT reexecuted (an
+# asserted/claim record) is rejected by assert, verify AND the stop-gate, even
+# though its exit_code is 0 and it is fresh. This is the structural guarantee
+# that an asserted claim can never be rendered as a re-executed check.
+d="$(newsandbox)"; sha='0000000000000000000000000000000000000000000000000000000000000000'
+mkdir -p "$d/.agent-proof/asserted"
+printf '{"label":"claimed","command":"true","exit_code":0,"sha256":"%s","log":"x","at":"2026-07-17T00:00:00Z","epoch":%s,"session":"","commit":"","tree":"","dirty":false,"schema_version":2,"ci":false,"ref":"","repo":"","subject":"","producer":"x","verifier":"","host_os":"linux","disposition":"asserted"}\n' "$sha" "$(date +%s)" > "$d/.agent-proof/asserted/ledger.jsonl"
+printf 'asserted\n' > "$d/.agent-proof/latest"
+( cd "$d" && bash "$DONE_GATE" assert --label claimed >/dev/null 2>&1 ); assert_rc=$?
+( cd "$d" && bash "$DONE_GATE" verify --label claimed --sha "$sha" >/dev/null 2>&1 ); verify_rc=$?
+stop_rc="$( cd "$d" && gate "$PAYLOAD" )"
+if [ "$assert_rc" != "0" ] && [ "$verify_rc" != "0" ] && [ "$stop_rc" = "2" ]; then
+  ok "asserted (disposition!=reexecuted) receipt is rejected by assert, verify and stop-gate"
+else bad "disposition enforcement (assert=$assert_rc verify=$verify_rc stop=$stop_rc)"; fi
+
+# EV7b. the guard keys on the disposition field, NOT a parsed schema_version, so an
+# oversized/garbage schema_version cannot overflow past the check and smuggle an
+# asserted record through as proof.
+d="$(newsandbox)"
+mkdir -p "$d/.agent-proof/big"
+printf '{"label":"claimed","command":"true","exit_code":0,"sha256":"%s","log":"x","at":"2026-07-17T00:00:00Z","epoch":%s,"session":"","commit":"","tree":"","dirty":false,"schema_version":9223372036854775808,"ci":false,"ref":"","repo":"","subject":"","producer":"x","verifier":"","host_os":"linux","disposition":"asserted"}\n' "$sha" "$(date +%s)" > "$d/.agent-proof/big/ledger.jsonl"
+printf 'big\n' > "$d/.agent-proof/latest"
+( cd "$d" && bash "$DONE_GATE" assert --label claimed >/dev/null 2>&1 ); assert_rc=$?
+stop_rc="$( cd "$d" && gate "$PAYLOAD" )"
+if [ "$assert_rc" != "0" ] && [ "$stop_rc" = "2" ]; then
+  ok "oversized schema_version cannot smuggle an asserted record past the gate"
+else bad "disposition guard overflow (assert=$assert_rc stop=$stop_rc)"; fi
+
+# EV8. a C0 control byte (form feed) in the commit subject still yields valid JSON
+# — the escaper must flatten the whole control range, not only newline/CR/tab.
+d="$(newsandbox)"
+( cd "$d" && git commit -q --allow-empty -m "$(printf 'subject\fform')" \
+  && bash "$DONE_GATE" capture --label ff -- true >/dev/null 2>&1 \
+  && bash "$DONE_GATE" assert --label ff >/dev/null 2>&1 )
+line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
+if printf '%s' "$line" | python3 -c 'import json,sys; d=json.load(sys.stdin); s=d["subject"]; assert all(ord(c)>=0x20 for c in s), repr(s); assert "form" in s' >/dev/null 2>&1; then
+  ok "control character in commit subject produces parseable JSON"
+else bad "control-char JSON escaping (got: $line)"; fi
+
+# EV9. host_os is one of the canonical values (never a raw uname like mingw64_nt).
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --label os -- true >/dev/null 2>&1 )
+line="$(tail -n1 "$d"/.agent-proof/*/ledger.jsonl 2>/dev/null)"
+if printf '%s' "$line" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["host_os"] in ("linux","darwin","windows","unknown"), d["host_os"]; assert d["host_os"]!="unknown"' >/dev/null 2>&1; then
+  ok "host_os is a canonical, engine-portable value"
+else bad "host_os canonicalization (got: $line)"; fi
+
+# EV10. the schemas document the separation: proof.schema pins disposition to
+# reexecuted and a separate claim.schema.json exists for claim/verdict records.
+if grep -q '"const": "reexecuted"' "$REPO/proof.schema.json" \
+   && [ -f "$REPO/claim.schema.json" ] \
+   && python3 -c "import json,sys; json.load(open(sys.argv[1], encoding='utf-8'))" "$REPO/claim.schema.json" >/dev/null 2>&1; then
+  ok "proof.schema pins reexecuted and claim.schema.json documents claim/verdict records"
+else bad "schema separation (proof.schema const / claim.schema.json)"; fi
 
 echo "== action verify mode (v0.10) =="
 

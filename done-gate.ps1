@@ -3,6 +3,7 @@
 # Native PowerShell port of done-gate.sh. Supports Windows PowerShell 5.1 and
 # PowerShell 7+ with built-ins only.
 
+$script:GATE_VERSION = '0.11.0'
 $ErrorActionPreference = 'Stop'
 
 function Write-Stderr {
@@ -55,6 +56,31 @@ function Get-GitDirty {
     try { $v = (& git status --porcelain 2>$null); if ($LASTEXITCODE -eq 0 -and $v) { return 'true' } } catch {}
     return 'false'
 }
+function Get-GitRepo {
+    try {
+        $inside = (& git rev-parse --is-inside-work-tree 2>$null)
+        if ($LASTEXITCODE -eq 0 -and ([string]$inside).Trim() -eq 'true') {
+            $v = (& git config --get remote.origin.url 2>$null)
+            # Do NOT .Trim() the value — bash does not trim it either; both engines
+            # let Json-Escape flatten any embedded control/whitespace so the two
+            # ledgers stay byte-identical.
+            if ($LASTEXITCODE -eq 0 -and $v) { return [string]$v }
+        }
+    } catch {}
+    return ''
+}
+function Get-GitSubject {
+    try { $v = (& git log -1 --format=%s 2>$null); if ($LASTEXITCODE -eq 0 -and $v) { return [string]$v } } catch {}
+    return ''
+}
+# Canonical host OS identity, matching done-gate.sh's vocabulary. Windows
+# PowerShell 5.1 does not define $IsLinux/$IsMacOS (Windows-only), so the
+# Test-Path guards keep this correct on 5.1 and accurate on PowerShell 7+.
+function Get-HostOs {
+    if ((Test-Path variable:IsLinux) -and $IsLinux) { return 'linux' }
+    if ((Test-Path variable:IsMacOS) -and $IsMacOS) { return 'darwin' }
+    return 'windows'
+}
 
 function Test-ValidName {
     param([string]$Name)
@@ -66,11 +92,13 @@ function Test-ValidName {
 function Json-Escape {
     param([AllowNull()][string]$Value)
     if ($null -eq $Value) { $Value = '' }
-    # Match the Bash ledger contract: only escape slash/quote and flatten
-    # control whitespace so hand-built JSONL remains compact and stable.
+    # Match the Bash ledger contract: escape slash/quote, then flatten EVERY C0
+    # control character (U+0000–U+001F: newline, CR, tab, form-feed, …) to a
+    # space. Raw control bytes are invalid inside a JSON string, so this keeps a
+    # hand-built JSONL line parseable regardless of commit-subject/URL content.
     $Value = $Value -replace '\\', '\\'
     $Value = $Value -replace '"', '\"'
-    $Value = $Value -replace "[`r`n`t]", ' '
+    $Value = $Value -replace '[\x00-\x1F]', ' '
     return $Value
 }
 
@@ -271,6 +299,23 @@ function Receipt-Dirty {
     return (Rec-Field $Line '"dirty":(true|false)')
 }
 
+function Receipt-Disposition {
+    param([string]$Line)
+    return (Rec-Field $Line '"disposition":"([a-z]+)"')
+}
+
+# An EXECUTION receipt is the only thing that can satisfy a gate. Only v2+ capture
+# writes a `disposition`, always "reexecuted"; the CLAIM/VERDICT dispositions are
+# "asserted"/"unparsed". A line is proof unless it carries a disposition that is
+# not "reexecuted". Keyed on the disposition field itself (not a parsed
+# schema_version, which [int] could overflow). v0/v1 (no disposition) pass as
+# before. Mirrors done-gate.sh.
+function Is-ExecutionReceipt {
+    param([string]$Line)
+    $disp = Receipt-Disposition $Line
+    return ([string]::IsNullOrEmpty($disp) -or $disp -eq 'reexecuted')
+}
+
 # Reason a receipt no longer matches the working tree, else ''. Uses the receipt's
 # RECORDED commit/dirty (not a fresh status) so a proof captured against a dirty
 # tree is not re-flagged; only a new commit or edits after a CLEAN capture count.
@@ -386,15 +431,23 @@ function Cmd-Capture {
     $gitCommit = Get-GitCommit
     $gitTree = Get-GitTree
     $gitDirty = Get-GitDirty
+    $gitRepo = Get-GitRepo
+    $gitSubject = Get-GitSubject
+    $producer = 'done-gate.ps1@' + $script:GATE_VERSION
+    $verifier = if ($env:AGENT_DONE_VERIFIER) { $env:AGENT_DONE_VERIFIER } else { '' }
+    $hostOs = Get-HostOs
+    $disposition = 'reexecuted'
     # Provenance: was this captured by a CI runner, and against which ref? Mirrors
     # done-gate.sh so the receipt JSON stays byte-identical across engines.
     $ci = if ($env:GITHUB_ACTIONS -or $env:CI) { 'true' } else { 'false' }
     $ref = if ($env:GITHUB_REF) { $env:GITHUB_REF } else { '' }
-    $receipt = ('{{"label":"{0}","command":"{1}","exit_code":{2},"sha256":"{3}","log":"{4}","at":"{5}","epoch":{6},"session":"{7}","commit":"{8}","tree":"{9}","dirty":{10},"schema_version":1,"ci":{11},"ref":"{12}"}}' -f `
+    $receipt = ('{{"label":"{0}","command":"{1}","exit_code":{2},"sha256":"{3}","log":"{4}","at":"{5}","epoch":{6},"session":"{7}","commit":"{8}","tree":"{9}","dirty":{10},"schema_version":2,"ci":{11},"ref":"{12}","repo":"{13}","subject":"{14}","producer":"{15}","verifier":"{16}","host_os":"{17}","disposition":"{18}"}}' -f `
         (Json-Escape $label), (Json-Escape (Command-Text $cmd)), $rc, $sha, `
         (Json-Escape $logRel), $at, $epoch, (Json-Escape $env:AGENT_DONE_SESSION), `
         (Json-Escape $gitCommit), (Json-Escape $gitTree), $gitDirty, `
-        $ci, (Json-Escape $ref))
+        $ci, (Json-Escape $ref), (Json-Escape $gitRepo), (Json-Escape $gitSubject), `
+        (Json-Escape $producer), (Json-Escape $verifier), (Json-Escape $hostOs), `
+        (Json-Escape $disposition))
     Append-TextLine (Join-Path $dir 'ledger.jsonl') $receipt
 
     $tmp = Join-Path $script:PROOF_DIR ('latest.' + $PID + '.tmp')
@@ -577,6 +630,7 @@ function Cmd-Assert {
         $cmd = ''
         $fresh = $false
         $commandAllowed = $true
+        $isExec = $true
         $ok = $false
 
         if ($found) {
@@ -584,6 +638,8 @@ function Cmd-Assert {
             $epochStr = Receipt-Epoch $line
             $sha = Receipt-Sha $line
             $cmd = Receipt-Command $line
+            # A committed claim/verdict record (disposition!=reexecuted) is not proof.
+            $isExec = Is-ExecutionReceipt $line
 
             if ($ttlInt -le 0) {
                 $fresh = $true
@@ -597,7 +653,7 @@ function Cmd-Assert {
                 try { $commandAllowed = ($cmd -match $lrx) } catch { $commandAllowed = $false }
             }
 
-            if ($exitCode -eq '0' -and $fresh -and $commandAllowed) { $ok = $true }
+            if ($exitCode -eq '0' -and $fresh -and $commandAllowed -and $isExec) { $ok = $true }
         }
 
         # State binding: a passing receipt captured against different code is stale.
@@ -633,6 +689,9 @@ function Cmd-Assert {
                 $foundText = if ($found) { 'yes' } else { 'no' }
                 $ecText = if ($exitCode) { $exitCode } else { '?' }
                 Write-Stderr "done-gate: assert FAIL label=$label found=$foundText exit=$ecText fresh=$($fresh.ToString().ToLowerInvariant()) command_allowed=$($commandAllowed.ToString().ToLowerInvariant())"
+                if ($found -and -not $isExec) {
+                    Write-Stderr "done-gate: assert FAIL label=$label - receipt is a claim/verdict record (disposition!=reexecuted), not a re-executed check"
+                }
             }
         }
     }
@@ -696,6 +755,9 @@ function Cmd-Verify {
     if (-not (Test-Path -LiteralPath $ledger)) { Die "verify: no ledger at $ledger" }
 
     $line = Latest-ForLabel $ledger $label
+    # A claim/verdict record (disposition!=reexecuted) is not execution evidence,
+    # so its recorded hash must never verify as a re-run output.
+    if ($line -and -not (Is-ExecutionReceipt $line)) { $line = '' }
     $got = ''
     if ($line) { $got = Receipt-Sha $line }
     $expected = $sha.ToLowerInvariant()

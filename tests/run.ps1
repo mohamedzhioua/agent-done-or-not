@@ -131,11 +131,11 @@ function Latest-Receipt {
 }
 
 function PassingCommand {
-    return @('pwsh', '-NoProfile', '-Command', 'exit 0')
+    return @($script:PSExe, '-NoProfile', '-Command', 'exit 0')
 }
 
 function FailingCommand {
-    return @('pwsh', '-NoProfile', '-Command', 'exit 9')
+    return @($script:PSExe, '-NoProfile', '-Command', 'exit 9')
 }
 
 # Git-backed sandbox for state-binding tests. Native git writes to stderr under
@@ -190,7 +190,7 @@ if ($receipt.sha256 -match '^[0-9a-f]{64}$' -and $receipt.exit_code -eq 0 -and (
 }
 
 $d = New-Sandbox
-$r = Invoke-Gate $d @('capture', '--label', 't', '--', 'pwsh', '-NoProfile', '-Command', 'Write-Output "hello"; exit 0')
+$r = Invoke-Gate $d @('capture', '--label', 't', '--', $PSExe, '-NoProfile', '-Command', 'Write-Output "hello"; exit 0')
 try {
     $receipt = Latest-Receipt $r.ProofDir
     if ($r.ExitCode -eq 0 -and $receipt.exit_code -eq 0 -and $r.Stdout -match 'hello') {
@@ -256,7 +256,8 @@ if ($a.ExitCode -eq 1) { Ok 'assert --ttl rejects a stale receipt' } else { Bad 
 
 $d = New-Sandbox
 $r = Invoke-Gate $d (@('capture', '--label', 'test', '--') + (PassingCommand))
-$okMatch = Invoke-Gate $d @('assert', '--label', 'test', '--allow-command-regex', '^pwsh -NoProfile -Command exit 0$') $r.ProofDir
+$passingRegex = '-NoProfile -Command exit 0$'
+$okMatch = Invoke-Gate $d @('assert', '--label', 'test', '--allow-command-regex', $passingRegex) $r.ProofDir
 $badMatch = Invoke-Gate $d @('assert', '--label', 'test', '--allow-command-regex', '^npm ') $r.ProofDir
 if ($okMatch.ExitCode -eq 0 -and $badMatch.ExitCode -eq 1) {
     Ok 'assert --allow-command-regex matches the right command class'
@@ -378,10 +379,11 @@ if ($a.ExitCode -eq 1) { Ok 'policy assert fails when a required label has a fai
 
 # 4. Per-label command_regex from policy - right command passes, wrong fails
 $d = New-Sandbox
-$policy = Write-Policy $d '{"required":[{"label":"test","command_regex":"^pwsh"}],"ttl":3600}'
+$hostExePattern = [IO.Path]::GetFileName($PSExe)
+$policy = Write-Policy $d ('{"required":[{"label":"test","command_regex":"' + $hostExePattern + '"}],"ttl":3600}')
 $proof = Join-Path $d '.proof'
 $r1 = Invoke-Gate $d (@('capture', '--label', 'test', '--run', 'run1', '--') + (PassingCommand)) $proof
-# Right command (PassingCommand starts with pwsh)
+# Right command (PassingCommand starts with the current PowerShell host)
 $a = Invoke-Gate $d @('assert', '--policy', $policy) $proof
 if ($a.ExitCode -eq 0) { Ok 'policy per-label command_regex passes for matching command' } else { Bad "policy regex-pass (exit $($a.ExitCode)) stderr=$($a.Stderr)" }
 
@@ -573,7 +575,7 @@ function Restore-Env {
     else { Set-Item "Env:$Name" $Value }
 }
 
-# 17. a LOCAL capture stamps schema_version:1, ci:false, empty ref. Clear the CI
+# 17. a LOCAL capture stamps schema_version:2, ci:false, empty ref. Clear the CI
 # env so this passes identically whether the suite runs locally or inside CI.
 $d = New-GitSandbox
 $oldCI = $env:CI; $oldGA = $env:GITHUB_ACTIONS; $oldRef = $env:GITHUB_REF
@@ -588,8 +590,8 @@ try {
     Restore-Env 'GITHUB_ACTIONS' $oldGA
     Restore-Env 'GITHUB_REF' $oldRef
 }
-if ($receipt.schema_version -eq 1 -and $receipt.ci -eq $false -and $receipt.ref -eq '') {
-    Ok 'local capture stamps schema_version:1, ci:false, empty ref'
+if ($receipt.schema_version -eq 2 -and $receipt.ci -eq $false -and $receipt.ref -eq '') {
+    Ok 'local capture stamps schema_version:2, ci:false, empty ref'
 } else {
     Bad 'provenance: local receipt (schema_version/ci/ref)'
 }
@@ -612,6 +614,191 @@ if ($receipt.ci -eq $true -and $receipt.ref -eq 'refs/pull/7/merge') {
     Ok 'CI capture stamps ci:true and the ref under test'
 } else {
     Bad 'provenance: CI receipt (ci/ref)'
+}
+
+Write-Output '== evidence envelope (v0.11) =='
+
+# 19. capture writes the flat v2 envelope with git and producer identity.
+$d = New-GitSandbox
+$old = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    Push-Location $d
+    & git remote add origin 'https://example.invalid/project.git' 2>&1 | Out-Null
+} finally {
+    Pop-Location
+    $ErrorActionPreference = $old
+}
+$r = Invoke-Gate $d (@('capture', '--label', 'envelope', '--') + (PassingCommand))
+$receipt = Latest-Receipt $r.ProofDir
+if ($receipt.schema_version -eq 2 -and $receipt.disposition -eq 'reexecuted' `
+        -and $receipt.producer -eq 'done-gate.ps1@0.11.0' `
+        -and $receipt.repo -eq 'https://example.invalid/project.git' `
+        -and $receipt.subject -eq 'init' -and -not [string]::IsNullOrEmpty($receipt.host_os)) {
+    Ok 'capture writes the v2 evidence envelope with repo, subject and producer'
+} else {
+    Bad 'evidence envelope fields'
+}
+
+# 20. verifier identity is copied from AGENT_DONE_VERIFIER and defaults empty.
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+$oldVerifier = $env:AGENT_DONE_VERIFIER
+try {
+    $env:AGENT_DONE_VERIFIER = 'x'
+    $null = Invoke-Gate $d (@('capture', '--label', 'set', '--run', 'verifier', '--') + (PassingCommand)) $proof
+    Remove-Item Env:AGENT_DONE_VERIFIER -ErrorAction SilentlyContinue
+    $null = Invoke-Gate $d (@('capture', '--label', 'unset', '--run', 'verifier', '--') + (PassingCommand)) $proof
+} finally {
+    Restore-Env 'AGENT_DONE_VERIFIER' $oldVerifier
+}
+$receipts = @(Read-LedgerLines $proof | ForEach-Object { $_ | ConvertFrom-Json })
+if ($receipts.Count -eq 2 -and $receipts[0].verifier -eq 'x' -and $receipts[1].verifier -eq '') {
+    Ok 'capture records set and unset verifier identity'
+} else {
+    Bad 'verifier identity'
+}
+
+# 21. BACKCOMPAT: a v1 receipt still satisfies assert, verify and stop-gate.
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+$run = 'legacy-v1'
+$runDir = Join-Path $proof $run
+New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+$sha = '0' * 64
+$now = [int64][Math]::Floor((([DateTime]::UtcNow - (New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc))).TotalSeconds))
+$line = '{"label":"legacy-v1","command":"true","exit_code":0,"sha256":"' + $sha + '","log":"x","at":"2026-07-16T00:00:00Z","epoch":' + $now + ',"session":"","commit":"","tree":"","dirty":true,"schema_version":1,"ci":false,"ref":""}'
+[IO.File]::WriteAllText((Join-Path $runDir 'ledger.jsonl'), ($line + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText((Join-Path $proof 'latest'), ($run + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+$a = Invoke-Gate $d @('assert', '--label', 'legacy-v1') $proof
+$v = Invoke-Gate $d @('verify', '--label', 'legacy-v1', '--sha', $sha) $proof
+$s = Invoke-StopGate $d $proof '{"session_id":"legacy-v1","stop_hook_active":false}'
+if ($a.ExitCode -eq 0 -and $v.ExitCode -eq 0 -and $s.ExitCode -eq 0) {
+    Ok 'legacy v1 receipt remains readable by assert, verify and stop-gate'
+} else {
+    Bad "legacy v1 backcompat ($($a.ExitCode)/$($v.ExitCode)/$($s.ExitCode))"
+}
+
+# 22. BACKCOMPAT: a v0 receipt without schema or git fields still works.
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+$run = 'legacy-v0'
+$runDir = Join-Path $proof $run
+New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+$now = [int64][Math]::Floor((([DateTime]::UtcNow - (New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc))).TotalSeconds))
+$line = '{"label":"legacy-v0","command":"true","exit_code":0,"sha256":"' + $sha + '","log":"x","at":"2026-07-16T00:00:00Z","epoch":' + $now + ',"session":""}'
+[IO.File]::WriteAllText((Join-Path $runDir 'ledger.jsonl'), ($line + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText((Join-Path $proof 'latest'), ($run + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+$a = Invoke-Gate $d @('assert', '--label', 'legacy-v0') $proof
+$v = Invoke-Gate $d @('verify', '--label', 'legacy-v0', '--sha', $sha) $proof
+$s = Invoke-StopGate $d $proof '{"session_id":"legacy-v0","stop_hook_active":false}'
+if ($a.ExitCode -eq 0 -and $v.ExitCode -eq 0 -and $s.ExitCode -eq 0) {
+    Ok 'legacy v0 receipt remains readable by assert, verify and stop-gate'
+} else {
+    Bad "legacy v0 backcompat ($($a.ExitCode)/$($v.ExitCode)/$($s.ExitCode))"
+}
+
+# 23. quotes and backslashes in the commit subject remain valid JSON.
+$d = New-GitSandbox
+$messageFile = Join-Path (Join-Path $d '.git') 'subject-message.txt'
+[IO.File]::WriteAllText($messageFile, 'subject "quoted" \ path', (New-Object System.Text.UTF8Encoding($false)))
+$old = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    Push-Location $d
+    & git commit -q --allow-empty -F $messageFile 2>&1 | Out-Null
+} finally {
+    Pop-Location
+    Remove-Item -LiteralPath $messageFile -ErrorAction SilentlyContinue
+    $ErrorActionPreference = $old
+}
+$r = Invoke-Gate $d (@('capture', '--label', 'subject', '--') + (PassingCommand))
+$receipt = Latest-Receipt $r.ProofDir
+$a = Invoke-Gate $d @('assert', '--label', 'subject') $r.ProofDir
+if ($receipt.subject -eq 'subject "quoted" \ path' -and $a.ExitCode -eq 0) {
+    Ok 'quoted commit subject produces parseable evidence'
+} else {
+    Bad 'commit subject JSON escaping'
+}
+
+# 24. SEPARATION: an asserted (disposition!=reexecuted) v2 record is rejected by
+# assert, verify AND the stop-gate even though exit_code=0 and it is fresh.
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+$run = 'asserted'
+$runDir = Join-Path $proof $run
+New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+$sha = '0' * 64
+$now = [int64][Math]::Floor((([DateTime]::UtcNow - (New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc))).TotalSeconds))
+$line = '{"label":"claimed","command":"true","exit_code":0,"sha256":"' + $sha + '","log":"x","at":"2026-07-17T00:00:00Z","epoch":' + $now + ',"session":"","commit":"","tree":"","dirty":false,"schema_version":2,"ci":false,"ref":"","repo":"","subject":"","producer":"x","verifier":"","host_os":"windows","disposition":"asserted"}'
+[IO.File]::WriteAllText((Join-Path $runDir 'ledger.jsonl'), ($line + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText((Join-Path $proof 'latest'), ($run + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+$a = Invoke-Gate $d @('assert', '--label', 'claimed') $proof
+$v = Invoke-Gate $d @('verify', '--label', 'claimed', '--sha', $sha) $proof
+$s = Invoke-StopGate $d $proof '{"session_id":"asserted","stop_hook_active":false}'
+if ($a.ExitCode -ne 0 -and $v.ExitCode -ne 0 -and $s.ExitCode -eq 2) {
+    Ok 'asserted (disposition!=reexecuted) receipt is rejected by assert, verify and stop-gate'
+} else {
+    Bad "disposition enforcement (assert=$($a.ExitCode) verify=$($v.ExitCode) stop=$($s.ExitCode))"
+}
+
+# 24b. the guard keys on the disposition field, not a parsed schema_version, so an
+# oversized schema_version cannot overflow past the check ([int] would throw/wrap).
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+$run = 'big'
+$runDir = Join-Path $proof $run
+New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+$now = [int64][Math]::Floor((([DateTime]::UtcNow - (New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc))).TotalSeconds))
+$line = '{"label":"claimed","command":"true","exit_code":0,"sha256":"' + $sha + '","log":"x","at":"2026-07-17T00:00:00Z","epoch":' + $now + ',"session":"","commit":"","tree":"","dirty":false,"schema_version":9223372036854775808,"ci":false,"ref":"","repo":"","subject":"","producer":"x","verifier":"","host_os":"windows","disposition":"asserted"}'
+[IO.File]::WriteAllText((Join-Path $runDir 'ledger.jsonl'), ($line + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText((Join-Path $proof 'latest'), ($run + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+$a = Invoke-Gate $d @('assert', '--label', 'claimed') $proof
+$s = Invoke-StopGate $d $proof '{"session_id":"big","stop_hook_active":false}'
+if ($a.ExitCode -ne 0 -and $s.ExitCode -eq 2) {
+    Ok 'oversized schema_version cannot smuggle an asserted record past the gate'
+} else {
+    Bad "disposition guard overflow (assert=$($a.ExitCode) stop=$($s.ExitCode))"
+}
+
+# 25. a C0 control byte (form feed) in the commit subject still yields valid JSON.
+$d = New-GitSandbox
+$messageFile = Join-Path (Join-Path $d '.git') 'ff-message.txt'
+[IO.File]::WriteAllText($messageFile, "subject`fform", (New-Object System.Text.UTF8Encoding($false)))
+$old = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    Push-Location $d
+    & git commit -q --allow-empty -F $messageFile 2>&1 | Out-Null
+} finally {
+    Pop-Location
+    Remove-Item -LiteralPath $messageFile -ErrorAction SilentlyContinue
+    $ErrorActionPreference = $old
+}
+$r = Invoke-Gate $d (@('capture', '--label', 'ff', '--') + (PassingCommand))
+try {
+    $receipt = Latest-Receipt $r.ProofDir
+    $hasControl = $false
+    foreach ($ch in $receipt.subject.ToCharArray()) { if ([int]$ch -lt 0x20) { $hasControl = $true } }
+    if (-not $hasControl -and $receipt.subject -match 'form') {
+        Ok 'control character in commit subject produces parseable JSON'
+    } else {
+        Bad "control-char JSON escaping (subject=$($receipt.subject))"
+    }
+} catch {
+    Bad 'control-char JSON escaping (receipt did not parse as JSON)'
+}
+
+# 26. host_os is a canonical, engine-portable value (never a raw uname). This
+# suite runs under pwsh on Windows, Linux and macOS, so assert membership in the
+# shared vocabulary rather than a single OS — mirrors done-gate.sh's EV9.
+$d = New-GitSandbox
+$r = Invoke-Gate $d (@('capture', '--label', 'os', '--') + (PassingCommand))
+$receipt = Latest-Receipt $r.ProofDir
+if (@('linux', 'darwin', 'windows') -contains $receipt.host_os) {
+    Ok 'host_os is a canonical, engine-portable value'
+} else {
+    Bad "host_os canonicalization (got $($receipt.host_os))"
 }
 
 Write-Output ''

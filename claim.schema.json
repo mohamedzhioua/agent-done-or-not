@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/agent-done-or-not/claim.schema.json",
+  "title": "Claim / verdict record",
+  "description": "One CLAIM/VERDICT record per line, stored in a SEPARATE file from the execution ledger (.agent-proof/<run>/ledger.jsonl). These records describe what an agent CLAIMED and how that claim relates to the execution receipts — they are NOT execution proof. Keeping them in their own file (and out of ledger.jsonl) is the structural guarantee that an asserted claim can never be counted as a re-executed check; the execution readers (assert, verify, stop-gate) consume only ledger.jsonl and additionally reject any schema_version>=2 ledger line whose disposition is not reexecuted. This schema is reserved for the audit feature (a later release); the verdict vocabulary it will use is defined there.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "label": {
+      "type": "string",
+      "description": "The check label the claim refers to (joins to an execution receipt by label)."
+    },
+    "schema_version": {
+      "type": "integer",
+      "description": "Record format version, shared with the execution envelope. Claim/verdict records are 2+."
+    },
+    "disposition": {
+      "type": "string",
+      "enum": ["asserted", "unparsed"],
+      "description": "How the claim's evidence was handled. \"asserted\": the agent stated an outcome with no re-executed receipt behind it. \"unparsed\": a claim-shaped statement that could not be bound to a check. The \"reexecuted\" disposition is reserved for EXECUTION receipts in ledger.jsonl and never appears here."
+    },
+    "claim_source": {
+      "type": "string",
+      "description": "Where the claim came from, e.g. a structured claim marker the agent emitted, or a conservative transcript heuristic (tagged as inferred). Set by the audit feature."
+    },
+    "parser_version": {
+      "type": "string",
+      "description": "The claim parser/version that produced this record, so a verdict can be reproduced against the same extraction logic."
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time the claim was recorded (ISO 8601)."
+    },
+    "epoch": {
+      "type": "integer",
+      "description": "Unix epoch seconds when the claim was recorded."
+    },
+    "session": {
+      "type": "string",
+      "description": "Agent session id when the harness exports AGENT_DONE_SESSION; empty otherwise."
+    }
+  }
+}

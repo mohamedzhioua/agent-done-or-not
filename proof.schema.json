@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/mohamedzhioua/agent-done-or-not/proof.schema.json",
   "title": "Proof receipt",
-  "description": "One JSON object per line in .agent-proof/<run>/ledger.jsonl. Each line records a verification check captured by done-gate.sh.",
+  "description": "One EXECUTION receipt per line in .agent-proof/<run>/ledger.jsonl. EXECUTION receipts record checks re-run by capture and always use disposition=reexecuted. CLAIM/VERDICT records (asserted/unparsed evidence) live in a SEPARATE file and follow claim.schema.json — structural separation, so an asserted claim can never be rendered as a re-executed check. As defense in depth, assert, verify, and stop-gate reject any schema_version>=2 line here whose disposition is not reexecuted.",
   "type": "object",
   "required": ["label", "command", "exit_code", "sha256", "log", "at", "epoch"],
   "additionalProperties": false,
@@ -55,7 +55,7 @@
     },
     "schema_version": {
       "type": "integer",
-      "description": "Receipt format version. 1 introduced provenance (ci, ref). Absent on receipts captured before v0.10.0; readers treat absence as version 0."
+      "description": "Receipt format version. 1 introduced provenance (ci, ref); 2 introduced the evidence envelope (identity, environment, and disposition). Absent on receipts captured before v0.10.0; readers treat absence as version 0."
     },
     "ci": {
       "type": "boolean",
@@ -64,6 +64,32 @@
     "ref": {
       "type": "string",
       "description": "The git ref under test at capture time (GITHUB_REF); empty outside CI. Records which branch/PR the CI verification ran against."
+    },
+    "repo": {
+      "type": "string",
+      "description": "The git remote.origin.url at capture time; empty outside a git repository or when no origin remote is configured."
+    },
+    "subject": {
+      "type": "string",
+      "description": "The HEAD commit subject at capture time; empty outside a git repository."
+    },
+    "producer": {
+      "type": "string",
+      "description": "The capture engine and version that produced the receipt, e.g. done-gate.sh@0.11.0."
+    },
+    "verifier": {
+      "type": "string",
+      "description": "The verifier identity supplied through AGENT_DONE_VERIFIER; empty when capture was invoked directly."
+    },
+    "host_os": {
+      "type": "string",
+      "enum": ["linux", "darwin", "windows", "unknown"],
+      "description": "Canonical host operating-system identity, shared by both engines: linux, darwin, windows, or unknown. Git Bash (uname MINGW*/MSYS*) resolves to windows so a receipt is engine-portable on the same machine."
+    },
+    "disposition": {
+      "type": "string",
+      "const": "reexecuted",
+      "description": "How the evidence was handled. In an EXECUTION receipt (this ledger) it is ALWAYS \"reexecuted\" — capture ran the recorded command. The asserted and unparsed dispositions belong to CLAIM/VERDICT records, which live in a separate file and follow claim.schema.json; they are NOT execution proof, and every reader (assert, verify, stop-gate) rejects a schema_version>=2 ledger line whose disposition is not reexecuted."
     }
   }
 }
