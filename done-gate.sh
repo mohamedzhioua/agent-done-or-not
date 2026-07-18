@@ -29,6 +29,12 @@
 #   show [--run R] [--json]
 #       Print the ledger for the run (newest run if --run is omitted).
 #
+#   audit --transcript FILE|- [--run R] [--json]
+#       Diff an agent's CLAIMS (structured <agent-done:claim> markers, with a
+#       transcript-heuristic fallback) against the receipt ledger. Verdict per
+#       claim: BACKED / UNBACKED / MISREPORTED / INTEGRITY_MISMATCH / UNPARSED.
+#       Exits non-zero on any unbacked, misreported, or integrity-mismatch claim.
+#
 # Receipts live under .agent-proof/<run>/ (add .agent-proof/ to .gitignore).
 # The run id defaults to $AGENT_DONE_SESSION, else a UTC timestamp.
 #
@@ -36,7 +42,7 @@
 # ledger is hand-written JSONL. No network, no LLM, no extra tooling.
 set -euo pipefail
 
-GATE_VERSION="0.11.0"
+GATE_VERSION="0.12.0"
 
 normalize_path() {
   case "$1" in
@@ -536,8 +542,217 @@ cmd_show() {
   fi
 }
 
+# --- audit: diff an agent's CLAIMS against the receipt ledger ------------------
+#
+# Two claim sources, tried in order (the CLI tags each so a human can weight it):
+#   1. Structured markers the agent is instructed to emit (the contract):
+#        <agent-done:claim label="test" exit="0" sha256="9f2c…" />
+#      Emitting a marker asserts the check PASSED; add exit="N" to claim a code.
+#   2. Conservative transcript heuristics (fallback) for claim-shaped prose with
+#      no marker. Heuristic claims are tagged `inferred` and never silently
+#      upgraded to backed.
+#
+# Verdicts (per claim, joined to the ledger by label; only EXECUTION receipts can
+# back a claim):
+#   BACKED             matching receipt, exit + hash consistent.
+#   UNBACKED           asserted, but no receipt exists.
+#   MISREPORTED        claimed success (exit 0) but recorded exit is non-zero.
+#   INTEGRITY_MISMATCH claimed a sha256 that != the recorded sha256.
+#   UNPARSED           claim-shaped text with no bindable label — reported, never
+#                      counted as backed.
+# (Never "TAMPERED": a hash proves a mismatch, not who caused it.)
+#
+# Exit non-zero if any claim is UNBACKED, MISREPORTED, or INTEGRITY_MISMATCH.
+
+marker_attr() {
+  # marker_attr <marker-string> <attr-name>
+  printf '%s' "$1" | grep -oE "$2=\"[^\"]*\"" | head -n1 | sed -E "s/^$2=\"([^\"]*)\"$/\1/" || true
+}
+
+audit_labels() {
+  # distinct labels present in a ledger. LC_ALL=C so the sort order (which the
+  # heuristic uses to pick the first matching label) is byte-ordinal — identical
+  # to the PowerShell port's Ordinal sort, keeping --json byte-for-byte in sync.
+  grep -oE '"label":"[^"]*"' "$1" 2>/dev/null | sed -E 's/"label":"([^"]*)"/\1/' | LC_ALL=C sort -u || true
+}
+
+# Regex-escape a label for use in an ERE (labels may contain '.'; '-'/'_' are
+# literal outside a bracket expression).
+audit_label_re() { printf '%s' "$1" | sed 's/\./\\./g'; }
+
+audit_receipt() {
+  # latest EXECUTION receipt for a label, or empty (a claim/verdict record cannot
+  # back a claim)
+  local ledger="$1" label="$2" line
+  line="$(latest_for_label "$ledger" "$label")"
+  [ -n "$line" ] || { printf ''; return; }
+  is_execution_receipt "$line" || { printf ''; return; }
+  printf '%s' "$line"
+}
+
+audit_verdict() {
+  # audit_verdict <ledger> <label> <claimed_exit> <claimed_sha> -> VERDICT
+  local ledger="$1" label="$2" cexit="$3" csha="$4" r rec_e rec_s eff claims_success
+  [ -n "$label" ] || { printf 'UNPARSED'; return; }
+  r="$(audit_receipt "$ledger" "$label")"
+  [ -n "$r" ] || { printf 'UNBACKED'; return; }
+  rec_e="$(rec_exit "$r" || true)"; rec_s="$(rec_sha "$r" || true)"
+  # Does the claim assert success? A marker asserts success unless it explicitly
+  # states a non-zero exit code. Normalize first so a zero-looking-but-not-"0"
+  # value (00, " 0") or garbage ("fail") can't skip the MISREPORTED check and
+  # launder a failing check into BACKED. Only a clean non-zero integer claims a
+  # non-zero code.
+  eff="$(printf '%s' "$cexit" | tr -d '[:space:]')"
+  case "$eff" in
+    ''|*[!0-9]*) claims_success=1 ;;   # absent or non-numeric -> asserts success
+    *[!0]*)      claims_success=0 ;;   # a non-zero digit -> claims a non-zero code
+    *)           claims_success=1 ;;   # all zeros -> success
+  esac
+  if [ "$claims_success" = "1" ] && [ -n "$rec_e" ] && [ "$rec_e" != "0" ]; then printf 'MISREPORTED'; return; fi
+  if [ -n "$csha" ] && [ -n "$rec_s" ] && [ "$csha" != "$rec_s" ]; then printf 'INTEGRITY_MISMATCH'; return; fi
+  printf 'BACKED'
+}
+
+# Conservative claim-shaped-line matcher for the heuristic fallback.
+AUDIT_CLAIM_RE='[Tt]ests?[[:space:]]+(pass|passed|passing)|[Ll]int[[:space:]]+(clean|passes|passed)|[Bb]uild[[:space:]]+(succeed|succeeds|succeeded|passes|passed)|all[[:space:]]+(tests[[:space:]]+)?green|[Vv]erified|ran[[:space:]]+successfully|exit[[:space:]]+(code[[:space:]]+)?0'
+
+cmd_audit() {
+  local transcript="" run="" json=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --transcript) [ "$#" -ge 2 ] || die "audit: --transcript requires a value"; transcript="$2"; shift 2 ;;
+      --run)        [ "$#" -ge 2 ] || die "audit: --run requires a value";        run="$2";        shift 2 ;;
+      --json)       json=1; shift ;;
+      *)            die "audit: unexpected arg '$1'" ;;
+    esac
+  done
+  [ -n "$transcript" ] || die "audit: --transcript <file|-> is required"
+
+  run="$(resolve_run_for_read "$run")"
+  [ -n "$run" ] || die "audit: no run found (run a capture first or pass --run)"
+  valid_name "$run" || die "audit: invalid run id"
+  local ledger="$PROOF_DIR/$run/ledger.jsonl"
+  [ -f "$ledger" ] || die "audit: no ledger at $ledger"
+
+  # NOTE: tmp is intentionally NOT `local` and cleaned on EXIT (not RETURN): a
+  # RETURN trap is global and would re-fire on main()'s return, where a local
+  # would be out of scope and trip `set -u`. EXIT fires once, after the value is
+  # still readable, and also covers the die() error paths.
+  tmp="$(mktemp -d 2>/dev/null)" || die "audit: cannot create a temp dir"
+  trap 'rm -rf "${tmp:-}" 2>/dev/null || true' EXIT
+  local src="$tmp/transcript" claims="$tmp/claims"
+  # Field separator for the normalized claim rows: a Unit Separator (US, 0x1f).
+  # It is NOT IFS-whitespace, so empty fields between separators are preserved
+  # (a plain tab would collapse them and misalign the columns).
+  local US; US=$'\037'
+  if [ "$transcript" = "-" ]; then cat > "$src"; else [ -f "$transcript" ] || die "audit: transcript not found: $transcript"; cp "$transcript" "$src"; fi
+  : > "$claims"
+
+  # 1) structured markers (the contract). One normalized row per marker:
+  #    label US claimed_exit US claimed_sha US source
+  local marker label cexit csha
+  # put each marker element on its own line first
+  grep -oE '<agent-done:claim[^>]*>' "$src" 2>/dev/null > "$tmp/markers" || true
+  while IFS= read -r marker; do
+    [ -n "$marker" ] || continue
+    label="$(marker_attr "$marker" label)"
+    cexit="$(marker_attr "$marker" exit)"
+    csha="$(marker_attr "$marker" sha256)"
+    printf '%s%s%s%s%s%smarker\n' "$label" "$US" "$cexit" "$US" "$csha" "$US" >> "$claims"
+  done < "$tmp/markers"
+
+  # set of labels already claimed by a marker (so heuristics don't double-count)
+  local marked; marked="$(cut -d"$US" -f1 "$claims" 2>/dev/null | grep -v '^$' | sort -u || true)"
+
+  # 2) heuristic fallback: claim-shaped lines with no marker. Bind to the first
+  #    known ledger label the line mentions; otherwise record as unparsed. Each
+  #    heuristic claim is tagged `inferred` and (per label) recorded at most once.
+  local known; known="$(audit_labels "$ledger")"
+  local line hit lbl seen_inferred=""
+  while IFS= read -r line; do
+    printf '%s' "$line" | grep -qE "$AUDIT_CLAIM_RE" 2>/dev/null || continue
+    if printf '%s' "$line" | grep -q '<agent-done:claim' 2>/dev/null; then continue; fi
+    hit=""
+    while IFS= read -r lbl; do
+      [ -n "$lbl" ] || continue
+      # Bind only on a WHOLE-token match: the label must be delimited by a
+      # non-label character (or string end) on both sides. Prevents "test" from
+      # binding "greatest"/"latest" and spuriously failing an honest report.
+      if printf '%s' "$line" | grep -qE "(^|[^A-Za-z0-9._-])$(audit_label_re "$lbl")([^A-Za-z0-9._-]|\$)" 2>/dev/null; then hit="$lbl"; break; fi
+    done <<EOF
+$known
+EOF
+    if [ -n "$hit" ]; then
+      if printf '%s\n' "$marked" | grep -qxF "$hit" 2>/dev/null; then continue; fi
+      if printf '%s\n' "$seen_inferred" | grep -qxF "$hit" 2>/dev/null; then continue; fi
+      seen_inferred="$seen_inferred
+$hit"
+      printf '%s%s%s%sinferred\n' "$hit" "$US" "$US" "$US" >> "$claims"
+    else
+      # claim-shaped but not bindable to a label -> UNPARSED (reported, not backed)
+      printf '%s%s%sinferred\n' "$US" "$US" "$US" >> "$claims"
+    fi
+  done < "$src"
+
+  # 3) compute verdicts + tallies
+  local n=0 backed=0 unbacked=0 misrep=0 integ=0 unparsed=0 nmark=0 ninf=0
+  local rows="" first=1 v r rexit rsha rowline
+  local c_label c_exit c_sha c_src
+  while IFS="$US" read -r c_label c_exit c_sha c_src; do
+    [ -n "$c_label$c_exit$c_sha$c_src" ] || continue
+    n=$((n+1))
+    if [ "$c_src" = "marker" ]; then nmark=$((nmark+1)); else ninf=$((ninf+1)); fi
+    v="$(audit_verdict "$ledger" "$c_label" "$c_exit" "$c_sha")"
+    r="$(audit_receipt "$ledger" "$c_label")"
+    rexit="$(printf '%s' "$r" | grep -oE '"exit_code":[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
+    rsha="$(printf '%s' "$r" | grep -oE '"sha256":"[0-9a-f]+"' | head -n1 | sed -E 's/.*"([0-9a-f]+)".*/\1/' || true)"
+    case "$v" in
+      BACKED) backed=$((backed+1)) ;;
+      UNBACKED) unbacked=$((unbacked+1)) ;;
+      MISREPORTED) misrep=$((misrep+1)) ;;
+      INTEGRITY_MISMATCH) integ=$((integ+1)) ;;
+      UNPARSED) unparsed=$((unparsed+1)) ;;
+    esac
+    if [ "$json" = "1" ]; then
+      [ "$first" = "1" ] || rows="$rows,"
+      first=0
+      rows="$rows{\"label\":\"$(json_escape "$c_label")\",\"source\":\"$c_src\",\"verdict\":\"$v\",\"claimed_exit\":\"$(json_escape "${c_exit:-}")\",\"claimed_sha256\":\"$(json_escape "${c_sha:-}")\",\"recorded_exit\":${rexit:-null},\"recorded_sha256\":\"$(json_escape "${rsha:-}")\"}"
+    else
+      printf -v rowline '%-18s %-8s %-18s claimed[exit=%s sha=%.12s] recorded[exit=%s sha=%.12s]' \
+        "${c_label:-<unparsed>}" "$c_src" "$v" "${c_exit:-0}" "${c_sha:-—}" "${rexit:-—}" "${rsha:-—}"
+      rows="$rows$rowline"$'\n'
+    fi
+  done < "$claims"
+
+  local ok=true
+  if [ "$unbacked" -gt 0 ] || [ "$misrep" -gt 0 ] || [ "$integ" -gt 0 ]; then ok=false; fi
+
+  if [ "$json" = "1" ]; then
+    printf '{"run":"%s","transcript":"%s","ok":%s,"summary":{"claims":%s,"backed":%s,"unbacked":%s,"misreported":%s,"integrity_mismatch":%s,"unparsed":%s,"marker":%s,"inferred":%s},"claims":[%s]}\n' \
+      "$(json_escape "$run")" "$(json_escape "$transcript")" "$ok" \
+      "$n" "$backed" "$unbacked" "$misrep" "$integ" "$unparsed" "$nmark" "$ninf" "$rows"
+  else
+    printf '# claim audit — run=%s  transcript=%s\n' "$run" "$transcript"
+    if [ "$n" = "0" ]; then
+      printf 'done-gate: audit — no claims found (0 markers, no claim-shaped lines).\n'
+    else
+      printf '%s' "$rows"
+    fi
+    printf 'Summary: %s claim(s) — %s backed, %s unbacked, %s misreported, %s integrity-mismatch, %s unparsed (%s marker, %s inferred)\n' \
+      "$n" "$backed" "$unbacked" "$misrep" "$integ" "$unparsed" "$nmark" "$ninf" >&2
+    printf 'Coverage: audited against run=%s. Inferred claims are best-effort; unparsed claims are reported, never counted as backed.\n' "$run" >&2
+    if [ "$ok" = "false" ]; then
+      printf 'done-gate: audit FAIL — %s unbacked, %s misreported, %s integrity-mismatch\n' "$unbacked" "$misrep" "$integ" >&2
+    else
+      printf 'done-gate: audit OK — no unbacked, misreported, or integrity-mismatched claims\n' >&2
+    fi
+  fi
+
+  [ "$ok" = "true" ]
+}
+
 usage() {
-  sed -n '2,40p' "$0"
+  sed -n '2,45p' "$0"
 }
 
 main() {
@@ -548,8 +763,9 @@ main() {
     assert)  cmd_assert "$@" ;;
     verify)  cmd_verify "$@" ;;
     show)    cmd_show "$@" ;;
+    audit)   cmd_audit "$@" ;;
     -h|--help|help) usage ;;
-    *) die "unknown subcommand '$sub' (capture | assert | verify | show)" ;;
+    *) die "unknown subcommand '$sub' (capture | assert | verify | show | audit)" ;;
   esac
 }
 

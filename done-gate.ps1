@@ -3,7 +3,7 @@
 # Native PowerShell port of done-gate.sh. Supports Windows PowerShell 5.1 and
 # PowerShell 7+ with built-ins only.
 
-$script:GATE_VERSION = '0.11.0'
+$script:GATE_VERSION = '0.12.0'
 $ErrorActionPreference = 'Stop'
 
 function Write-Stderr {
@@ -813,6 +813,230 @@ function Cmd-Show {
     }
 }
 
+# --- audit ----------------------------------------------------------------
+#
+# Two claim sources, tried in order (the CLI tags each so a human can weight it):
+#   1. Structured markers the agent is instructed to emit (the contract):
+#        <agent-done:claim label="test" exit="0" sha256="9f2c..." />
+#      Emitting a marker asserts the check PASSED; add exit="N" to claim a code.
+#   2. Conservative transcript heuristics (fallback) for claim-shaped prose with
+#      no marker. Heuristic claims are tagged `inferred` and never silently
+#      upgraded to backed.
+#
+# Verdicts (per claim, joined to the ledger by label; only EXECUTION receipts can
+# back a claim):
+#   BACKED             matching receipt, exit + hash consistent.
+#   UNBACKED           asserted, but no receipt exists.
+#   MISREPORTED        claimed success (exit 0) but recorded exit is non-zero.
+#   INTEGRITY_MISMATCH claimed a sha256 that != the recorded sha256.
+#   UNPARSED           claim-shaped text with no bindable label - reported, never
+#                      counted as backed.
+#
+# Exit non-zero if any claim is UNBACKED, MISREPORTED, or INTEGRITY_MISMATCH.
+# Mirrors done-gate.sh's cmd_audit/marker_attr/audit_labels/audit_receipt/audit_verdict.
+
+# Conservative claim-shaped-line matcher for the heuristic fallback. Mirrors
+# done-gate.sh's AUDIT_CLAIM_RE (POSIX [[:space:]] -> \s). Matched with -cmatch
+# (case-sensitive), same as bash's `grep -qE` with no -i flag.
+$script:AUDIT_CLAIM_RE = '[Tt]ests?\s+(pass|passed|passing)|[Ll]int\s+(clean|passes|passed)|[Bb]uild\s+(succeed|succeeds|succeeded|passes|passed)|all\s+(tests\s+)?green|[Vv]erified|ran\s+successfully|exit\s+(code\s+)?0'
+
+function Get-MarkerAttr {
+    param([string]$Marker, [string]$AttrName)
+    $m = [regex]::Match($Marker, [regex]::Escape($AttrName) + '="([^"]*)"')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ''
+}
+
+# Distinct labels present in a ledger, sorted like bash's `sort -u` (ordinal).
+function Get-AuditLabels {
+    param([string]$Ledger)
+    if (-not (Test-Path -LiteralPath $Ledger)) { return @() }
+    $labels = New-Object System.Collections.Generic.List[string]
+    foreach ($line in (Get-Content -LiteralPath $Ledger)) {
+        foreach ($m in [regex]::Matches($line, '"label":"([^"]*)"')) {
+            $labels.Add($m.Groups[1].Value)
+        }
+    }
+    $arr = @($labels | Select-Object -Unique)
+    [Array]::Sort($arr, [StringComparer]::Ordinal)
+    return $arr
+}
+
+# Latest EXECUTION receipt for a label, or '' (a claim/verdict record cannot back
+# a claim).
+function Get-AuditReceipt {
+    param([string]$Ledger, [string]$Label)
+    $line = Latest-ForLabel $Ledger $Label
+    if ([string]::IsNullOrEmpty($line)) { return '' }
+    if (-not (Is-ExecutionReceipt $line)) { return '' }
+    return $line
+}
+
+function Get-AuditVerdict {
+    param([string]$Ledger, [string]$Label, [string]$CExit, [string]$CSha)
+    if ([string]::IsNullOrEmpty($Label)) { return 'UNPARSED' }
+    $r = Get-AuditReceipt $Ledger $Label
+    if ([string]::IsNullOrEmpty($r)) { return 'UNBACKED' }
+    $recE = Receipt-ExitCode $r
+    $recS = Receipt-Sha $r
+    # Does the claim assert success? Normalize first (mirrors done-gate.sh) so a
+    # zero-looking-but-not-"0" value ("00", " 0") or garbage ("fail") can't skip
+    # the MISREPORTED check and launder a failing check into BACKED. Only a clean
+    # non-zero integer claims a non-zero code.
+    $eff = ($CExit -replace '\s', '')
+    $claimsSuccess = $true
+    if ($eff -match '^[0-9]+$') { $claimsSuccess = -not ($eff -match '[^0]') }
+    if ($claimsSuccess -and -not [string]::IsNullOrEmpty($recE) -and $recE -ne '0') { return 'MISREPORTED' }
+    if (-not [string]::IsNullOrEmpty($CSha) -and -not [string]::IsNullOrEmpty($recS) -and $CSha -ne $recS) { return 'INTEGRITY_MISMATCH' }
+    return 'BACKED'
+}
+
+function Cmd-Audit {
+    param([string[]]$Argv)
+    $transcript = ''
+    $run = ''
+    $json = $false
+    $i = 0
+    while ($i -lt $Argv.Count) {
+        switch ($Argv[$i]) {
+            '--transcript' {
+                if ($i + 1 -ge $Argv.Count) { Die 'audit: --transcript requires a value' }
+                $transcript = $Argv[$i + 1]; $i += 2
+            }
+            '--run' {
+                if ($i + 1 -ge $Argv.Count) { Die 'audit: --run requires a value' }
+                $run = $Argv[$i + 1]; $i += 2
+            }
+            '--json' {
+                $json = $true; $i += 1
+            }
+            default {
+                Die "audit: unexpected arg '$($Argv[$i])'"
+            }
+        }
+    }
+    if ([string]::IsNullOrEmpty($transcript)) { Die 'audit: --transcript <file|-> is required' }
+
+    $run = Resolve-RunForRead $run $script:PROOF_DIR
+    if ([string]::IsNullOrEmpty($run)) { Die 'audit: no run found (run a capture first or pass --run)' }
+    if (-not (Test-ValidName $run)) { Die 'audit: invalid run id' }
+    $ledger = Join-Path (Join-Path $script:PROOF_DIR $run) 'ledger.jsonl'
+    if (-not (Test-Path -LiteralPath $ledger)) { Die "audit: no ledger at $ledger" }
+
+    if ($transcript -eq '-') {
+        $srcText = [Console]::In.ReadToEnd()
+    } else {
+        if (-not (Test-Path -LiteralPath $transcript)) { Die "audit: transcript not found: $transcript" }
+        $srcText = Get-Content -Raw -LiteralPath $transcript
+    }
+    if ($null -eq $srcText) { $srcText = '' }
+    $lines = [regex]::Split($srcText, "\r\n|\r|\n")
+
+    # 1) structured markers (the contract). One normalized claim per marker tag.
+    $claims = New-Object System.Collections.Generic.List[pscustomobject]
+    foreach ($line in $lines) {
+        foreach ($mm in [regex]::Matches($line, '<agent-done:claim[^>]*>')) {
+            $marker = $mm.Value
+            $label = Get-MarkerAttr $marker 'label'
+            $cexit = Get-MarkerAttr $marker 'exit'
+            $csha = Get-MarkerAttr $marker 'sha256'
+            [void]$claims.Add([pscustomobject]@{ Label = $label; Exit = $cexit; Sha = $csha; Source = 'marker' })
+        }
+    }
+
+    # set of labels already claimed by a marker (so heuristics don't double-count)
+    $marked = @($claims | Where-Object { -not [string]::IsNullOrEmpty($_.Label) } | ForEach-Object { $_.Label } | Select-Object -Unique)
+
+    # 2) heuristic fallback: claim-shaped lines with no marker. Bind to the first
+    #    known ledger label the line mentions; otherwise record as unparsed. Each
+    #    heuristic claim is tagged `inferred` and (per label) recorded at most once.
+    $known = Get-AuditLabels $ledger
+    $seenInferred = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+        if (-not ($line -cmatch $script:AUDIT_CLAIM_RE)) { continue }
+        if ($line.Contains('<agent-done:claim')) { continue }
+        $hit = ''
+        foreach ($lbl in $known) {
+            if ([string]::IsNullOrEmpty($lbl)) { continue }
+            # Bind only on a WHOLE-token match (mirrors done-gate.sh): the label
+            # must be delimited by a non-label character (or string end) on both
+            # sides, so "test" never binds "greatest"/"latest".
+            if ([regex]::IsMatch($line, '(^|[^A-Za-z0-9._-])' + [regex]::Escape($lbl) + '([^A-Za-z0-9._-]|$)')) { $hit = $lbl; break }
+        }
+        if (-not [string]::IsNullOrEmpty($hit)) {
+            if ($marked -contains $hit) { continue }
+            if ($seenInferred -contains $hit) { continue }
+            [void]$seenInferred.Add($hit)
+            [void]$claims.Add([pscustomobject]@{ Label = $hit; Exit = ''; Sha = ''; Source = 'inferred' })
+        } else {
+            # claim-shaped but not bindable to a label -> UNPARSED
+            [void]$claims.Add([pscustomobject]@{ Label = ''; Exit = ''; Sha = ''; Source = 'inferred' })
+        }
+    }
+
+    # 3) compute verdicts + tallies
+    $n = 0; $backed = 0; $unbacked = 0; $misrep = 0; $integ = 0; $unparsed = 0; $nmark = 0; $ninf = 0
+    $jsonRows = New-Object System.Collections.Generic.List[string]
+    $humanRows = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $claims) {
+        $n++
+        if ($c.Source -eq 'marker') { $nmark++ } else { $ninf++ }
+        $v = Get-AuditVerdict $ledger $c.Label $c.Exit $c.Sha
+        $r = Get-AuditReceipt $ledger $c.Label
+        $rexit = if ($r) { Receipt-ExitCode $r } else { '' }
+        $rsha = if ($r) { Receipt-Sha $r } else { '' }
+        switch ($v) {
+            'BACKED' { $backed++ }
+            'UNBACKED' { $unbacked++ }
+            'MISREPORTED' { $misrep++ }
+            'INTEGRITY_MISMATCH' { $integ++ }
+            'UNPARSED' { $unparsed++ }
+        }
+        if ($json) {
+            $recordedExit = if ([string]::IsNullOrEmpty($rexit)) { 'null' } else { $rexit }
+            $rowJson = ('{{"label":"{0}","source":"{1}","verdict":"{2}","claimed_exit":"{3}","claimed_sha256":"{4}","recorded_exit":{5},"recorded_sha256":"{6}"}}' -f `
+                (Json-Escape $c.Label), $c.Source, $v, (Json-Escape $c.Exit), (Json-Escape $c.Sha), $recordedExit, (Json-Escape $rsha))
+            [void]$jsonRows.Add($rowJson)
+        } else {
+            $labelDisp = if ([string]::IsNullOrEmpty($c.Label)) { '<unparsed>' } else { $c.Label }
+            $exitDisp = if ([string]::IsNullOrEmpty($c.Exit)) { '0' } else { $c.Exit }
+            $shaDisp = if ([string]::IsNullOrEmpty($c.Sha)) { [string][char]0x2014 } else { $c.Sha.Substring(0, [Math]::Min(12, $c.Sha.Length)) }
+            $rexitDisp = if ([string]::IsNullOrEmpty($rexit)) { [string][char]0x2014 } else { $rexit }
+            $rshaDisp = if ([string]::IsNullOrEmpty($rsha)) { [string][char]0x2014 } else { $rsha.Substring(0, [Math]::Min(12, $rsha.Length)) }
+            $rowLine = ('{0,-18} {1,-8} {2,-18} claimed[exit={3} sha={4}] recorded[exit={5} sha={6}]' -f `
+                $labelDisp, $c.Source, $v, $exitDisp, $shaDisp, $rexitDisp, $rshaDisp)
+            [void]$humanRows.Add($rowLine)
+        }
+    }
+
+    $ok = -not ($unbacked -gt 0 -or $misrep -gt 0 -or $integ -gt 0)
+    $dash = [string][char]0x2014
+
+    if ($json) {
+        $okText = if ($ok) { 'true' } else { 'false' }
+        $summaryJson = ('{{"claims":{0},"backed":{1},"unbacked":{2},"misreported":{3},"integrity_mismatch":{4},"unparsed":{5},"marker":{6},"inferred":{7}}}' -f `
+            $n, $backed, $unbacked, $misrep, $integ, $unparsed, $nmark, $ninf)
+        Write-Output ('{{"run":"{0}","transcript":"{1}","ok":{2},"summary":{3},"claims":[{4}]}}' -f `
+            (Json-Escape $run), (Json-Escape $transcript), $okText, $summaryJson, ($jsonRows -join ','))
+    } else {
+        Write-Output ("# claim audit $dash run=$run  transcript=$transcript")
+        if ($n -eq 0) {
+            Write-Output "done-gate: audit $dash no claims found (0 markers, no claim-shaped lines)."
+        } else {
+            foreach ($row in $humanRows) { Write-Output $row }
+        }
+        Write-Stderr ("Summary: $n claim(s) $dash $backed backed, $unbacked unbacked, $misrep misreported, $integ integrity-mismatch, $unparsed unparsed ($nmark marker, $ninf inferred)")
+        Write-Stderr ("Coverage: audited against run=$run. Inferred claims are best-effort; unparsed claims are reported, never counted as backed.")
+        if (-not $ok) {
+            Write-Stderr ("done-gate: audit FAIL $dash $unbacked unbacked, $misrep misreported, $integ integrity-mismatch")
+        } else {
+            Write-Stderr ("done-gate: audit OK $dash no unbacked, misreported, or integrity-mismatched claims")
+        }
+    }
+
+    if ($ok) { exit 0 } else { exit 1 }
+}
+
 $script:ROOT = Get-Root
 $script:PROOF_DIR = if ($env:AGENT_DONE_DIR) { $env:AGENT_DONE_DIR } else { Join-Path $script:ROOT '.agent-proof' }
 
@@ -831,11 +1055,12 @@ switch ($sub) {
     'assert' { Cmd-Assert $rest }
     'verify' { Cmd-Verify $rest }
     'show' { Cmd-Show $rest }
+    'audit' { Cmd-Audit $rest }
     '-h' { Usage }
     '--help' { Usage }
     'help' { Usage }
     default {
         Usage
-        Die "unknown subcommand '$sub' (capture | assert | verify | show)"
+        Die "unknown subcommand '$sub' (capture | assert | verify | show | audit)"
     }
 }
