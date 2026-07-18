@@ -723,7 +723,7 @@ d="$(newsandbox)"
 ( cd "$d" && git remote add origin https://example.invalid/project.git \
   && bash "$DONE_GATE" capture --label envelope -- true >/dev/null 2>&1 )
 ledger="$(printf '%s\n' "$d"/.agent-proof/*/ledger.jsonl)"
-if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['schema_version']==2 and d['disposition']=='reexecuted'; assert d['producer']=='done-gate.sh@0.12.0'; assert d['repo']=='https://example.invalid/project.git' and d['subject']=='init'; assert isinstance(d['host_os'],str) and d['host_os']" "$ledger" >/dev/null 2>&1; then
+if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['schema_version']==2 and d['disposition']=='reexecuted'; assert d['producer']=='done-gate.sh@0.13.0'; assert d['repo']=='https://example.invalid/project.git' and d['subject']=='init'; assert isinstance(d['host_os'],str) and d['host_os']" "$ledger" >/dev/null 2>&1; then
   ok "capture writes the v2 evidence envelope with repo, subject and producer"
 else bad "evidence envelope fields"; fi
 
@@ -783,7 +783,7 @@ else bad "commit subject JSON escaping (got: $line)"; fi
 d="$(newsandbox)"
 ( cd "$d" && INPUT_CHECKS='test: true' AGENT_DONE_GATE="$DONE_GATE" bash "$REPO/ci-verify.sh" >/dev/null 2>&1 )
 ledger="$(printf '%s\n' "$d"/.agent-proof/*/ledger.jsonl)"
-if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['verifier']=='ci-verify.sh@0.12.0'" "$ledger" >/dev/null 2>&1; then
+if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['verifier']=='ci-verify.sh@0.13.0'" "$ledger" >/dev/null 2>&1; then
   ok "ci-verify receipts carry verifier identity"
 else bad "ci-verify verifier identity"; fi
 
@@ -976,6 +976,119 @@ if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["ok"] i
   ok "heuristic binds whole-token labels only (no substring false positive)"
 else bad "audit substring binding ($(cat "$d/wb.json"))"; fi
 
+echo "== PR Receipts / review-pr (v0.13) =="
+
+# PR1. a Node project: a passing "tests pass" and a FAILING "lint clean" are both
+# RE-EXECUTED (with the real npm commands); "build succeeds" with no build script
+# and "no breaking changes" are ASSERTED; a vague phrase is UNPARSED; a failed
+# re-run makes the exit code non-zero.
+if command -v npm >/dev/null 2>&1; then
+  d="$(newsandbox)"
+  printf '{"name":"demo","version":"1.0.0","scripts":{"test":"node -e \\"process.exit(0)\\"","lint":"node -e \\"process.exit(1)\\""}}\n' > "$d/package.json"
+  printf 'Tests pass and lint is clean. The build succeeds.\nNo breaking changes. Should be good to merge now.\n' > "$d/pr.md"
+  ( cd "$d" && bash "$DONE_GATE" review-pr --body pr.md --json 2>/dev/null ) > "$d/pr.json"; pr_rc=$?
+  if python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+rx={c["claim"].lower(): c for c in d["reexecuted"]}
+assert d["summary"]["reexecuted"]==2, d["summary"]
+tp=[c for c in d["reexecuted"] if c["command"]=="npm test"][0]; assert tp["status"]=="pass" and tp["exit_code"]==0, tp
+lc=[c for c in d["reexecuted"] if c["command"]=="npm run lint"][0]; assert lc["status"]=="fail" and lc["exit_code"]!=0, lc
+assert d["summary"]["asserted"]>=2 and d["summary"]["unparsed"]>=1, d["summary"]
+assert d["ok"] is False
+' "$d/pr.json" >/dev/null 2>&1 && [ "$pr_rc" != "0" ]; then
+    ok "review-pr re-executes Node claims (pass+fail), asserts + unparses, exits non-zero"
+  else bad "review-pr Node ($pr_rc): $(cat "$d/pr.json")"; fi
+
+  # PR2. when every re-executed claim passes, exit 0.
+  d="$(newsandbox)"
+  printf '{"name":"demo","version":"1.0.0","scripts":{"test":"node -e \\"process.exit(0)\\""}}\n' > "$d/package.json"
+  printf 'All tests pass.\n' > "$d/pr.md"
+  ( cd "$d" && bash "$DONE_GATE" review-pr --body pr.md >/dev/null 2>&1 ); rc=$?
+  [ "$rc" = "0" ] && ok "review-pr exits 0 when every re-executed claim passes" || bad "review-pr all-pass exit ($rc)"
+else
+  ok "review-pr Node tests skipped (no npm on PATH)"
+  ok "review-pr all-pass test skipped (no npm on PATH)"
+fi
+
+# PR3. command resolution per ecosystem (Python + Go) — assert the RESOLVED
+# command string, independent of whether the toolchain is installed.
+d="$(newsandbox)"
+printf '[project]\nname = "x"\n' > "$d/pyproject.toml"
+printf 'Tests pass.\n' > "$d/pr.md"
+( cd "$d" && bash "$DONE_GATE" review-pr --body pr.md --json 2>/dev/null ) > "$d/py.json" || true
+d2="$(newsandbox)"
+printf 'module x\n\ngo 1.20\n' > "$d2/go.mod"
+printf 'Tests pass.\n' > "$d2/pr.md"
+( cd "$d2" && bash "$DONE_GATE" review-pr --body pr.md --json 2>/dev/null ) > "$d2/go.json" || true
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["reexecuted"][0]["command"]=="pytest", d' "$d/py.json" >/dev/null 2>&1 \
+   && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["reexecuted"][0]["command"]=="go test ./...", d' "$d2/go.json" >/dev/null 2>&1; then
+  ok "review-pr resolves the real command per ecosystem (pytest / go test)"
+else bad "review-pr command resolution (py=$(cat "$d/py.json"); go=$(cat "$d2/go.json"))"; fi
+
+# PR4. SECURITY: a claim line cannot inject a command — the re-run stays the
+# manifest-resolved command, never anything from the PR text.
+if command -v npm >/dev/null 2>&1; then
+  d="$(newsandbox)"
+  printf '{"name":"demo","version":"1.0.0","scripts":{"test":"node -e \\"process.exit(0)\\""}}\n' > "$d/package.json"
+  printf 'tests pass; touch PWNED; rm -rf important\n' > "$d/pr.md"
+  ( cd "$d" && bash "$DONE_GATE" review-pr --body pr.md --json 2>/dev/null ) > "$d/sec.json" || true
+  if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["reexecuted"][0]["command"]=="npm test", d' "$d/sec.json" >/dev/null 2>&1 \
+     && [ ! -e "$d/PWNED" ]; then
+    ok "review-pr does not execute commands embedded in PR text (no injection)"
+  else bad "review-pr injection ($(cat "$d/sec.json"); PWNED=$([ -e "$d/PWNED" ] && echo yes || echo no))"; fi
+else ok "review-pr injection test skipped (no npm on PATH)"; fi
+
+# PR5. --body - reads the PR text from stdin.
+d="$(newsandbox)"
+( cd "$d" && printf 'Should be good to merge.\n' | bash "$DONE_GATE" review-pr --body - --json 2>/dev/null ) > "$d/stdin.json" || true
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["summary"]["unparsed"]>=1 and d["summary"]["reexecuted"]==0; assert d["ok"] is True' "$d/stdin.json" >/dev/null 2>&1; then
+  ok "review-pr reads the PR body from stdin (--body -)"
+else bad "review-pr stdin ($(cat "$d/stdin.json"))"; fi
+
+# PR6. review-pr rejects a missing --body with a clear message.
+rpr_usage="$(bash "$DONE_GATE" review-pr 2>&1 || true)"
+if printf '%s' "$rpr_usage" | grep -qi 'body'; then
+  ok "review-pr requires --body and reports so"
+else bad "review-pr usage guard ($rpr_usage)"; fi
+
+# PR7. the receipt never says VERIFIED (label discipline).
+d="$(newsandbox)"
+printf 'Tests pass. No breaking changes. Should be good.\n' > "$d/pr.md"
+out="$( ( cd "$d" && bash "$DONE_GATE" review-pr --body pr.md 2>&1 ) || true)"
+if printf '%s' "$out" | grep -qE 'RE-EXECUTED|ASSERTED|UNPARSED' && ! printf '%s' "$out" | grep -qi 'verified'; then
+  ok "review-pr uses RE-EXECUTED/ASSERTED/UNPARSED, never VERIFIED"
+else bad "review-pr label discipline"; fi
+
+# PR8. the Action declares mode: review-pr with a pr-body input.
+if grep -q "inputs.mode == 'review-pr'" "$REPO/action.yml" && grep -q 'pr-body:' "$REPO/action.yml"; then
+  ok "action.yml wires mode: review-pr with a pr-body input"
+else bad "action.yml review-pr plumbing"; fi
+
+# PR9. the per-command timeout bounds a hanging re-run and reports exit 124 with
+# still-valid JSON. Guarded: needs npm AND a timeout/gtimeout binary.
+if command -v npm >/dev/null 2>&1 && { command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; }; then
+  d="$(newsandbox)"
+  printf '{"name":"demo","version":"1.0.0","scripts":{"test":"node -e \\"setTimeout(function(){},8000)\\""}}\n' > "$d/package.json"
+  printf 'Tests pass.\n' > "$d/pr.md"
+  ( cd "$d" && AGENT_DONE_PR_TIMEOUT=1 bash "$DONE_GATE" review-pr --body pr.md --json 2>/dev/null ) > "$d/to.json" || true
+  if python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["reexecuted"][0]; assert c["exit_code"]==124, c; assert c["status"]=="fail"' "$d/to.json" >/dev/null 2>&1; then
+    ok "review-pr bounds a hanging re-run with a timeout (exit 124, valid JSON)"
+  else bad "review-pr timeout ($(cat "$d/to.json"))"; fi
+else ok "review-pr timeout test skipped (no npm or timeout binary)"; fi
+
+# PR10. bash and PowerShell agree on a claim that spans a line break — the
+# whitespace normalization makes a word-wrapped claim match on both engines.
+if command -v npm >/dev/null 2>&1; then
+  d="$(newsandbox)"
+  printf '{"name":"demo","version":"1.0.0","scripts":{"test":"node -e \\"process.exit(0)\\""}}\n' > "$d/package.json"
+  printf 'The\ntests pass now.\n' > "$d/pr.md"
+  ( cd "$d" && bash "$DONE_GATE" review-pr --body pr.md --json 2>/dev/null ) > "$d/wrap.json" || true
+  if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["summary"]["reexecuted"]==1 and d["reexecuted"][0]["command"]=="npm test"' "$d/wrap.json" >/dev/null 2>&1; then
+    ok "review-pr matches a claim wrapped across a line break"
+  else bad "review-pr line-wrap normalization ($(cat "$d/wrap.json"))"; fi
+else ok "review-pr line-wrap test skipped (no npm)"; fi
+
 echo "== action verify mode (v0.10) =="
 
 # AV1. action.yml declares mode: verify plumbing (checks input + gated step).
@@ -1011,8 +1124,9 @@ if grep -Fq 'uses: actions/upload-artifact@v4' "$REPO/action.yml" \
   ok "verify uploads receipts + prints SHA in the summary"
 else bad "verify artifact/summary"; fi
 
-# AV4. an unsupported mode is rejected (fail closed).
-if grep -Eq "if: \\\$\{\{ inputs.mode != 'assert' && inputs.mode != 'verify' \}\}" "$REPO/action.yml"; then
+# AV4. an unsupported mode is rejected (fail closed) — the guard must exclude
+# every supported mode (assert, verify, review-pr).
+if grep -Eq "if: \\\$\{\{ inputs.mode != 'assert' && inputs.mode != 'verify' && inputs.mode != 'review-pr' \}\}" "$REPO/action.yml"; then
   ok "action.yml rejects an unsupported mode"
 else bad "action.yml mode guard"; fi
 

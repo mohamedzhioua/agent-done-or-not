@@ -35,6 +35,12 @@
 #       claim: BACKED / UNBACKED / MISREPORTED / INTEGRITY_MISMATCH / UNPARSED.
 #       Exits non-zero on any unbacked, misreported, or integrity-mismatch claim.
 #
+#   review-pr --body FILE|- [--commits [--base REF]] [--json]   ("PR Receipts")
+#       Parse a PR description's testable claims ("tests pass", "lint clean",
+#       "build succeeds"), auto-resolve the project's REAL commands from its
+#       manifests, re-execute them, and print a receipt: RE-EXECUTED / ASSERTED /
+#       UNPARSED. Never "VERIFIED". Exits non-zero if a re-executed claim fails.
+#
 # Receipts live under .agent-proof/<run>/ (add .agent-proof/ to .gitignore).
 # The run id defaults to $AGENT_DONE_SESSION, else a UTC timestamp.
 #
@@ -42,7 +48,7 @@
 # ledger is hand-written JSONL. No network, no LLM, no extra tooling.
 set -euo pipefail
 
-GATE_VERSION="0.12.0"
+GATE_VERSION="0.13.0"
 
 normalize_path() {
   case "$1" in
@@ -751,21 +757,209 @@ $hit"
   [ "$ok" = "true" ]
 }
 
+# --- review-pr: re-execute an AI-authored PR's claimed checks ("PR Receipts") ---
+#
+# Parse the testable claims out of a PR description / commit messages ("tests
+# pass", "lint clean", "build succeeds"), auto-resolve the project's REAL
+# commands from its manifests, re-execute them, and print a receipt splitting
+# claims into RE-EXECUTED / ASSERTED / UNPARSED. It never says "VERIFIED": a
+# green re-run proves the command passed here and now, not that the PR is correct.
+#
+# SECURITY: the re-executed command is chosen ONLY from this file's fixed
+# per-ecosystem resolution table — it is NEVER derived from PR text. The PR body
+# selects which CATEGORY (test/lint/build) is claimed; it can never inject a
+# command. Re-execution still runs the project's own code, so untrusted PRs
+# belong in a CI sandbox with NO secrets and NOT pull_request_target — see
+# docs/pr-receipts.md.
+
+# Resolve category (test|lint|build) -> the project's real command, or empty.
+# First matching manifest wins. Only well-known canonical commands, no guessing.
+pr_resolve() {
+  local cat="$1"
+  if [ -f package.json ]; then
+    case "$cat" in
+      test)  grep -qE '"test"[[:space:]]*:'  package.json 2>/dev/null && printf 'npm test' ;;
+      lint)  grep -qE '"lint"[[:space:]]*:'  package.json 2>/dev/null && printf 'npm run lint' ;;
+      build) grep -qE '"build"[[:space:]]*:' package.json 2>/dev/null && printf 'npm run build' ;;
+    esac
+  elif [ -f pyproject.toml ]; then
+    case "$cat" in
+      test) printf 'pytest' ;;
+      lint) printf 'ruff check .' ;;
+      build) : ;;   # no single canonical Python build command -> asserted
+    esac
+  elif [ -f go.mod ]; then
+    case "$cat" in
+      test)  printf 'go test ./...' ;;
+      lint)  printf 'go vet ./...' ;;
+      build) printf 'go build ./...' ;;
+    esac
+  fi
+}
+
+# claim-shape patterns (matched case-insensitively, ERE)
+PR_RE_TEST='tests?[[:space:]]+(pass|passed|passing|are[[:space:]]+green|succeed(s|ed)?)|(all[[:space:]]+)?tests?[[:space:]]+green|test[[:space:]]+suite[[:space:]]+pass'
+PR_RE_LINT='lint(ing)?[[:space:]]+(clean|passes|passed|is[[:space:]]+clean)|no[[:space:]]+lint[[:space:]]+(error|warning)'
+PR_RE_BUILD='builds?[[:space:]]+(succeed(s|ed)?|passes|passed|works|is[[:space:]]+green|clean(ly)?|success)|compiles?[[:space:]]+(clean(ly)?|success)'
+# recognized-but-not-re-executable assertions
+PR_RE_ASSERTED='no[[:space:]]+breaking[[:space:]]+changes|backwards?[[:space:]]+compatible|handles?[[:space:]]+(all[[:space:]]+)?edge[[:space:]]+cases|no[[:space:]]+regressions?|fully[[:space:]]+tested'
+# vague merge-readiness phrases -> unparsed
+PR_RE_UNPARSED='(ready|good)[[:space:]]+to[[:space:]]+(merge|go)|looks[[:space:]]+good|lgtm|should[[:space:]]+be[[:space:]]+(good|fine|ready)'
+
+pr_match() { grep -ioE "$2" "$1" 2>/dev/null | head -n1 || true; }
+
+cmd_review_pr() {
+  local body="" commits=0 base="" json=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --body)    [ "$#" -ge 2 ] || die "review-pr: --body requires a value"; body="$2"; shift 2 ;;
+      --commits) commits=1; shift ;;
+      --base)    [ "$#" -ge 2 ] || die "review-pr: --base requires a value"; base="$2"; shift 2 ;;
+      --json)    json=1; shift ;;
+      *)         die "review-pr: unexpected arg '$1'" ;;
+    esac
+  done
+  [ -n "$body" ] || die "review-pr: --body <file|-> is required"
+
+  tmp="$(mktemp -d 2>/dev/null)" || die "review-pr: cannot create a temp dir"
+  trap 'rm -rf "${tmp:-}" 2>/dev/null || true' EXIT
+  local claimfile="$tmp/claims.txt"
+  if [ "$body" = "-" ]; then cat > "$claimfile"; else [ -f "$body" ] || die "review-pr: body not found: $body"; cp "$body" "$claimfile"; fi
+  # optionally fold in commit-message subjects/bodies from base..HEAD
+  if [ "$commits" = "1" ]; then
+    [ -n "$base" ] || base="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || printf 'origin/HEAD')"
+    git log --format=%B "$base"..HEAD 2>/dev/null >> "$claimfile" || true
+  fi
+  # Normalize whitespace to single spaces BEFORE matching: a word-wrapped PR
+  # description breaks a phrase across lines ("...and the\ntests pass..."). Folding
+  # newlines/tabs to spaces (and squeezing runs) lets a wrapped claim match, AND
+  # keeps this line-agnostic engine byte-identical with the PowerShell port, whose
+  # .NET \s crosses newlines.
+  LC_ALL=C tr '\r\n\t' '   ' < "$claimfile" | tr -s ' ' > "$claimfile.norm"
+  claimfile="$claimfile.norm"
+
+  local reexec="" asserted="" unparsed="" first_r=1 first_a=1 first_u=1
+  local n_reexec=0 n_asserted=0 n_unparsed=0 overall=0
+  local US; US=$'\037'
+
+  # 1) re-executable categories: claimed -> resolve -> re-execute (or assert if
+  #    no command resolves).
+  local cat re claim cmd logf rc sha status
+  for cat in test lint build; do
+    case "$cat" in test) re="$PR_RE_TEST";; lint) re="$PR_RE_LINT";; build) re="$PR_RE_BUILD";; esac
+    claim="$(pr_match "$claimfile" "$re")"
+    [ -n "$claim" ] || continue
+    cmd="$(pr_resolve "$cat" || true)"
+    if [ -z "$cmd" ]; then
+      # claimed, but nothing to re-execute against -> asserted (unverified)
+      asserted="$asserted$claim${US}no $cat command resolved from the project's manifests$US"$'\n'
+      n_asserted=$((n_asserted+1)); continue
+    fi
+    logf="$tmp/$cat.log"
+    # NOTE: $cmd is a fixed internal string (see pr_resolve), never PR-derived.
+    # A claimed check that FAILS on re-run is a real receipt, not a script error,
+    # so disable set -e around it and capture the command's own exit code.
+    # stdin is redirected from /dev/null so a check that reads stdin can't block.
+    # timeout: prefer GNU `timeout`, then `gtimeout` (macOS/Homebrew coreutils).
+    local to_bin=""
+    command -v timeout  >/dev/null 2>&1 && to_bin="timeout"
+    [ -n "$to_bin" ] || { command -v gtimeout >/dev/null 2>&1 && to_bin="gtimeout"; }
+    set +e
+    if [ -n "$to_bin" ]; then
+      "$to_bin" "${AGENT_DONE_PR_TIMEOUT:-300}" sh -c "$cmd" > "$logf" 2>&1 < /dev/null; rc=$?
+    else
+      sh -c "$cmd" > "$logf" 2>&1 < /dev/null; rc=$?
+    fi
+    set -e
+    sha="$(sha256_of_file "$logf" 2>/dev/null || printf '')"
+    [ "$rc" = "0" ] && status="pass" || { status="fail"; overall=1; }
+    reexec="$reexec$claim$US$cmd$US$rc$US$sha$US$status"$'\n'
+    n_reexec=$((n_reexec+1))
+  done
+
+  # 2) recognized-but-not-re-executable assertions.
+  local a_claim
+  a_claim="$(pr_match "$claimfile" "$PR_RE_ASSERTED")"
+  if [ -n "$a_claim" ]; then
+    asserted="$asserted$a_claim${US}no command maps to this claim$US"$'\n'
+    n_asserted=$((n_asserted+1))
+  fi
+
+  # 3) vague / unparsed claim-shaped phrases.
+  local u_claim
+  u_claim="$(pr_match "$claimfile" "$PR_RE_UNPARSED")"
+  if [ -n "$u_claim" ]; then
+    unparsed="$unparsed$u_claim"$'\n'
+    n_unparsed=$((n_unparsed+1))
+  fi
+
+  if [ "$json" = "1" ]; then
+    local rows_r="" rows_a="" rows_u="" c cm rc2 sh2 st2 cl rsn ph
+    while IFS="$US" read -r c cm rc2 sh2 st2; do
+      [ -n "$c$cm" ] || continue
+      [ "$first_r" = "1" ] || rows_r="$rows_r,"; first_r=0
+      rows_r="$rows_r{\"claim\":\"$(json_escape "$c")\",\"command\":\"$(json_escape "$cm")\",\"exit_code\":${rc2:-null},\"sha256\":\"$(json_escape "$sh2")\",\"status\":\"$st2\"}"
+    done <<< "$reexec"
+    while IFS="$US" read -r cl rsn; do
+      [ -n "$cl$rsn" ] || continue
+      [ "$first_a" = "1" ] || rows_a="$rows_a,"; first_a=0
+      rows_a="$rows_a{\"claim\":\"$(json_escape "$cl")\",\"reason\":\"$(json_escape "$rsn")\"}"
+    done <<< "$asserted"
+    while IFS= read -r ph; do
+      [ -n "$ph" ] || continue
+      [ "$first_u" = "1" ] || rows_u="$rows_u,"; first_u=0
+      rows_u="$rows_u\"$(json_escape "$ph")\""
+    done <<< "$unparsed"
+    printf '{"ok":%s,"summary":{"reexecuted":%s,"asserted":%s,"unparsed":%s},"reexecuted":[%s],"asserted":[%s],"unparsed":[%s]}\n' \
+      "$([ "$overall" = "0" ] && echo true || echo false)" "$n_reexec" "$n_asserted" "$n_unparsed" "$rows_r" "$rows_a" "$rows_u"
+  else
+    printf '# PR Receipts\n\n'
+    printf 'RE-EXECUTED (%s claim(s) re-run)\n' "$n_reexec"
+    if [ "$n_reexec" = "0" ]; then printf '  (none)\n'; else
+      while IFS="$US" read -r c cm rc2 sh2 st2; do
+        [ -n "$c$cm" ] || continue
+        if [ "$st2" = "pass" ]; then mark="PASS"; else mark="FAIL"; fi
+        printf '  %-4s "%s"  -> %s  exit=%s  sha256=%.12s\n' "$mark" "$c" "$cm" "$rc2" "$sh2"
+      done <<< "$reexec"
+    fi
+    printf '\nASSERTED (%s claim(s), no re-executable evidence)\n' "$n_asserted"
+    if [ "$n_asserted" = "0" ]; then printf '  (none)\n'; else
+      while IFS="$US" read -r cl rsn; do
+        [ -n "$cl$rsn" ] || continue
+        printf '  ?    "%s"  -- %s\n' "$cl" "$rsn"
+      done <<< "$asserted"
+    fi
+    printf '\nUNPARSED (%s claim-like phrase(s), not confidently matched)\n' "$n_unparsed"
+    if [ "$n_unparsed" = "0" ]; then printf '  (none)\n'; else
+      while IFS= read -r ph; do [ -n "$ph" ] || continue; printf '  .    "%s"\n' "$ph"; done <<< "$unparsed"
+    fi
+    printf '\nA green re-run proves the command passed here and now, not that the PR is correct.\n' >&2
+    if [ "$overall" = "0" ]; then
+      printf 'done-gate: review-pr OK — %s re-executed claim(s) passed\n' "$n_reexec" >&2
+    else
+      printf 'done-gate: review-pr FAIL — a re-executed claim did not pass\n' >&2
+    fi
+  fi
+
+  [ "$overall" = "0" ]
+}
+
 usage() {
-  sed -n '2,45p' "$0"
+  sed -n '2,52p' "$0"
 }
 
 main() {
   [ "$#" -ge 1 ] || { usage; exit 2; }
   local sub="$1"; shift
   case "$sub" in
-    capture) cmd_capture "$@" ;;
-    assert)  cmd_assert "$@" ;;
-    verify)  cmd_verify "$@" ;;
-    show)    cmd_show "$@" ;;
-    audit)   cmd_audit "$@" ;;
+    capture)   cmd_capture "$@" ;;
+    assert)    cmd_assert "$@" ;;
+    verify)    cmd_verify "$@" ;;
+    show)      cmd_show "$@" ;;
+    audit)     cmd_audit "$@" ;;
+    review-pr) cmd_review_pr "$@" ;;
     -h|--help|help) usage ;;
-    *) die "unknown subcommand '$sub' (capture | assert | verify | show | audit)" ;;
+    *) die "unknown subcommand '$sub' (capture | assert | verify | show | audit | review-pr)" ;;
   esac
 }
 
