@@ -15,6 +15,7 @@
     "done-gate.ps1",
     "stop-gate.ps1",
     "proof.schema.json",
+    "claim.schema.json",
     "policy.schema.json",
     "CLAUDE.md",
     "AGENTS.md",

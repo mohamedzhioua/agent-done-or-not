@@ -742,6 +742,25 @@ if ($a.ExitCode -ne 0 -and $v.ExitCode -ne 0 -and $s.ExitCode -eq 2) {
     Bad "disposition enforcement (assert=$($a.ExitCode) verify=$($v.ExitCode) stop=$($s.ExitCode))"
 }
 
+# 24b. the guard keys on the disposition field, not a parsed schema_version, so an
+# oversized schema_version cannot overflow past the check ([int] would throw/wrap).
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+$run = 'big'
+$runDir = Join-Path $proof $run
+New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+$now = [int64][Math]::Floor((([DateTime]::UtcNow - (New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc))).TotalSeconds))
+$line = '{"label":"claimed","command":"true","exit_code":0,"sha256":"' + $sha + '","log":"x","at":"2026-07-17T00:00:00Z","epoch":' + $now + ',"session":"","commit":"","tree":"","dirty":false,"schema_version":9223372036854775808,"ci":false,"ref":"","repo":"","subject":"","producer":"x","verifier":"","host_os":"windows","disposition":"asserted"}'
+[IO.File]::WriteAllText((Join-Path $runDir 'ledger.jsonl'), ($line + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText((Join-Path $proof 'latest'), ($run + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+$a = Invoke-Gate $d @('assert', '--label', 'claimed') $proof
+$s = Invoke-StopGate $d $proof '{"session_id":"big","stop_hook_active":false}'
+if ($a.ExitCode -ne 0 -and $s.ExitCode -eq 2) {
+    Ok 'oversized schema_version cannot smuggle an asserted record past the gate'
+} else {
+    Bad "disposition guard overflow (assert=$($a.ExitCode) stop=$($s.ExitCode))"
+}
+
 # 25. a C0 control byte (form feed) in the commit subject still yields valid JSON.
 $d = New-GitSandbox
 $messageFile = Join-Path (Join-Path $d '.git') 'ff-message.txt'

@@ -151,13 +151,14 @@ rec_epoch="$(printf '%s' "$last_line" | grep -oE '"epoch":[0-9]+' | head -n1 | g
 [ -n "$sha" ]       || deny "most recent receipt is unparseable (no sha256)"
 [ -n "$rec_epoch" ] || deny "most recent receipt is unparseable (no epoch)"
 
-# A schema_version>=2 receipt is proof ONLY when disposition=reexecuted. An
-# "asserted"/"unparsed" record is a CLAIM/VERDICT record — it can never satisfy
-# the gate. v0/v1 receipts (no disposition) predate this field and are unaffected.
-rec_schema="$(printf '%s' "$last_line" | grep -oE '"schema_version":[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
+# Only v2+ capture writes a `disposition`, always "reexecuted"; the CLAIM/VERDICT
+# dispositions are "asserted"/"unparsed". A receipt is proof unless it carries a
+# disposition that is not "reexecuted". Keyed on the disposition field itself (not
+# a parsed schema_version integer, which an oversized value could overflow past).
+# v0/v1 receipts (no disposition) are unaffected.
 rec_disp="$(printf '%s' "$last_line" | grep -oE '"disposition":"[a-z]+"' | head -n1 | sed -E 's/.*"([a-z]+)".*/\1/' || true)"
-if [ -n "$rec_schema" ] && [ "$rec_schema" -ge 2 ] 2>/dev/null && [ "$rec_disp" != "reexecuted" ]; then
-  deny "most recent receipt is a claim/verdict record (disposition=${rec_disp:-none}) — an asserted claim cannot satisfy the gate"
+if [ -n "$rec_disp" ] && [ "$rec_disp" != "reexecuted" ]; then
+  deny "most recent receipt is a claim/verdict record (disposition=$rec_disp) — an asserted claim cannot satisfy the gate"
 fi
 
 # --- loop-guard awareness (informational, not a bypass) -----------------------

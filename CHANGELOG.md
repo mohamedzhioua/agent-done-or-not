@@ -27,10 +27,12 @@ and hash verification.
 
 ### Hardened
 - **Readers reject asserted claims as proof (defense in depth).** `assert`,
-  `verify`, and the Stop gate now fail closed on any `schema_version>=2`
-  ledger line whose `disposition` is not `reexecuted`, so even a hand-planted
-  `asserted` line in `ledger.jsonl` cannot satisfy a gate. v0/v1 receipts (no
-  `disposition`) are unaffected.
+  `verify`, and the Stop gate now fail closed on any ledger line that carries a
+  `disposition` other than `reexecuted`, so even a hand-planted `asserted` line
+  in `ledger.jsonl` cannot satisfy a gate. The check keys on the `disposition`
+  field itself (only v2+ capture writes it), not on a parsed `schema_version`
+  integer, so an oversized/garbage `schema_version` cannot overflow past it.
+  v0/v1 receipts (no `disposition`) are unaffected.
 - **Canonical `host_os` across engines.** Both engines now emit one of
   `linux` / `darwin` / `windows` / `unknown` (Git Bash `MINGW*`/`MSYS*` →
   `windows`), so a receipt is engine-portable on the same machine.

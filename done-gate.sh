@@ -138,23 +138,19 @@ rec_sha()     { printf '%s' "$1" | grep -oE '"sha256":"[0-9a-f]+"' | head -n1 | 
 rec_command() { printf '%s' "$1" | sed -E 's/.*"command":"(.*)","exit_code":.*/\1/'; }
 rec_commit()  { printf '%s' "$1" | grep -oE '"commit":"[0-9a-f]*"' | head -n1 | sed -E 's/.*"([0-9a-f]*)".*/\1/'; }
 rec_dirty()   { printf '%s' "$1" | grep -oE '"dirty":(true|false)' | head -n1 | sed -E 's/.*:(true|false)/\1/'; }
-rec_schema()  { printf '%s' "$1" | grep -oE '"schema_version":[0-9]+' | head -n1 | grep -oE '[0-9]+'; }
 rec_disp()    { printf '%s' "$1" | grep -oE '"disposition":"[a-z]+"' | head -n1 | sed -E 's/.*"([a-z]+)".*/\1/'; }
 
-# An EXECUTION receipt is the only thing that can satisfy a gate. v0/v1 receipts
-# (no schema_version, or schema_version < 2) predate the disposition field and are
-# accepted as before. A schema_version>=2 line is proof ONLY when its disposition
-# is "reexecuted"; an "asserted" or "unparsed" record is a CLAIM/VERDICT record
-# that must never be counted as a re-run check. Returns 0 (proof) / 1 (not proof).
-# Fails CLOSED: anything a v2 line records other than reexecuted is not proof.
+# An EXECUTION receipt is the only thing that can satisfy a gate. Only v2+ capture
+# writes a `disposition`, and it is always "reexecuted"; the CLAIM/VERDICT
+# dispositions are "asserted"/"unparsed". So the rule is keyed on the disposition
+# field itself, NOT on schema_version: a line is proof unless it carries a
+# disposition that is not "reexecuted". v0/v1 receipts (no disposition) are
+# accepted as before. This deliberately avoids parsing schema_version as an
+# integer, so an oversized/garbage schema_version can't overflow past the check.
+# Returns 0 (proof) / 1 (claim/verdict — not proof). Fails CLOSED.
 is_execution_receipt() {
-  local sv disp
-  sv="$(rec_schema "$1")"; disp="$(rec_disp "$1")"
-  if [ -n "$sv" ] && [ "$sv" -ge 2 ] 2>/dev/null; then
-    [ "$disp" = "reexecuted" ]
-  else
-    return 0
-  fi
+  local disp; disp="$(rec_disp "$1")"
+  [ -z "$disp" ] || [ "$disp" = "reexecuted" ]
 }
 
 # Compare a receipt's RECORDED git state to the working tree NOW. Echoes a short

@@ -802,6 +802,19 @@ if [ "$assert_rc" != "0" ] && [ "$verify_rc" != "0" ] && [ "$stop_rc" = "2" ]; t
   ok "asserted (disposition!=reexecuted) receipt is rejected by assert, verify and stop-gate"
 else bad "disposition enforcement (assert=$assert_rc verify=$verify_rc stop=$stop_rc)"; fi
 
+# EV7b. the guard keys on the disposition field, NOT a parsed schema_version, so an
+# oversized/garbage schema_version cannot overflow past the check and smuggle an
+# asserted record through as proof.
+d="$(newsandbox)"
+mkdir -p "$d/.agent-proof/big"
+printf '{"label":"claimed","command":"true","exit_code":0,"sha256":"%s","log":"x","at":"2026-07-17T00:00:00Z","epoch":%s,"session":"","commit":"","tree":"","dirty":false,"schema_version":9223372036854775808,"ci":false,"ref":"","repo":"","subject":"","producer":"x","verifier":"","host_os":"linux","disposition":"asserted"}\n' "$sha" "$(date +%s)" > "$d/.agent-proof/big/ledger.jsonl"
+printf 'big\n' > "$d/.agent-proof/latest"
+( cd "$d" && bash "$DONE_GATE" assert --label claimed >/dev/null 2>&1 ); assert_rc=$?
+stop_rc="$( cd "$d" && gate "$PAYLOAD" )"
+if [ "$assert_rc" != "0" ] && [ "$stop_rc" = "2" ]; then
+  ok "oversized schema_version cannot smuggle an asserted record past the gate"
+else bad "disposition guard overflow (assert=$assert_rc stop=$stop_rc)"; fi
+
 # EV8. a C0 control byte (form feed) in the commit subject still yields valid JSON
 # — the escaper must flatten the whole control range, not only newline/CR/tab.
 d="$(newsandbox)"

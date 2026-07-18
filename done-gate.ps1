@@ -299,28 +299,21 @@ function Receipt-Dirty {
     return (Rec-Field $Line '"dirty":(true|false)')
 }
 
-function Receipt-Schema {
-    param([string]$Line)
-    return (Rec-Field $Line '"schema_version":([0-9]+)')
-}
-
 function Receipt-Disposition {
     param([string]$Line)
     return (Rec-Field $Line '"disposition":"([a-z]+)"')
 }
 
-# An EXECUTION receipt is the only thing that can satisfy a gate. v0/v1 receipts
-# (no schema_version, or < 2) predate the disposition field and pass as before. A
-# schema_version>=2 line is proof ONLY when disposition=reexecuted; an asserted or
-# unparsed record is a CLAIM/VERDICT record that must never count as a re-run
-# check. Fails CLOSED for any other v2 disposition. Mirrors done-gate.sh.
+# An EXECUTION receipt is the only thing that can satisfy a gate. Only v2+ capture
+# writes a `disposition`, always "reexecuted"; the CLAIM/VERDICT dispositions are
+# "asserted"/"unparsed". A line is proof unless it carries a disposition that is
+# not "reexecuted". Keyed on the disposition field itself (not a parsed
+# schema_version, which [int] could overflow). v0/v1 (no disposition) pass as
+# before. Mirrors done-gate.sh.
 function Is-ExecutionReceipt {
     param([string]$Line)
-    $sv = Receipt-Schema $Line
-    if ($sv -match '^[0-9]+$' -and [int]$sv -ge 2) {
-        return ((Receipt-Disposition $Line) -eq 'reexecuted')
-    }
-    return $true
+    $disp = Receipt-Disposition $Line
+    return ([string]::IsNullOrEmpty($disp) -or $disp -eq 'reexecuted')
 }
 
 # Reason a receipt no longer matches the working tree, else ''. Uses the receipt's
