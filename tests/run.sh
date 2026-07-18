@@ -1124,8 +1124,9 @@ if grep -Fq 'uses: actions/upload-artifact@v4' "$REPO/action.yml" \
   ok "verify uploads receipts + prints SHA in the summary"
 else bad "verify artifact/summary"; fi
 
-# AV4. an unsupported mode is rejected (fail closed).
-if grep -Eq "if: \\\$\{\{ inputs.mode != 'assert' && inputs.mode != 'verify' \}\}" "$REPO/action.yml"; then
+# AV4. an unsupported mode is rejected (fail closed) — the guard must exclude
+# every supported mode (assert, verify, review-pr).
+if grep -Eq "if: \\\$\{\{ inputs.mode != 'assert' && inputs.mode != 'verify' && inputs.mode != 'review-pr' \}\}" "$REPO/action.yml"; then
   ok "action.yml rejects an unsupported mode"
 else bad "action.yml mode guard"; fi
 
