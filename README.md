@@ -395,6 +395,39 @@ subagent's summary before the parent trusts it — blocking only on a real findi
 and failing open otherwise. See **[`docs/markers.md`](docs/markers.md)** for the
 paste-ready marker contract, the agent instruction snippet, and the hook wiring.
 
+## PR Receipts — re-run an AI-authored PR's claimed checks
+
+`audit` checks the agent's own claims; **`review-pr`** checks a **pull request's**
+claims from the reviewer's side. It parses the testable claims out of a PR
+description ("tests pass", "lint clean", "build succeeds"), auto-resolves the
+project's **real** commands from its manifests (`package.json`, `pyproject.toml`,
+`go.mod`), re-executes them, and prints a receipt — instead of another speculative
+LLM review comment.
+
+```bash
+gh pr view 142 --json body -q .body | done-gate.sh review-pr --body -
+```
+
+```text
+RE-EXECUTED (2 claim(s) re-run)
+  PASS "Tests pass"     -> npm test      exit=0  sha256=02098f4d5280
+  FAIL "lint is clean"  -> npm run lint  exit=1  sha256=10ec55f5a41e
+
+ASSERTED (1 claim(s), no re-executable evidence)
+  ?    "no breaking changes"  -- no command maps to this claim
+
+UNPARSED (1 claim-like phrase(s), not confidently matched)
+  .    "should be good to merge"
+```
+
+Labels are **RE-EXECUTED / ASSERTED / UNPARSED** — never "VERIFIED": a green
+re-run proves the command passed here and now, not that the PR is correct. It
+exits non-zero when a re-executed claim fails, so it can gate a CI check. The
+command re-run is resolved from the manifests, **never from the PR text**. As a
+GitHub Action, use `mode: review-pr` — **CI-only for untrusted PRs, on the
+`pull_request` event with no secrets**. Full trust model and Action recipe:
+**[`docs/pr-receipts.md`](docs/pr-receipts.md)**.
+
 ## How it works
 
 1. **`done-gate.sh capture`** runs your check, streams its output, and appends a

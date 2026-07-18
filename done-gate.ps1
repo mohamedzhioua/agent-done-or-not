@@ -3,7 +3,7 @@
 # Native PowerShell port of done-gate.sh. Supports Windows PowerShell 5.1 and
 # PowerShell 7+ with built-ins only.
 
-$script:GATE_VERSION = '0.12.0'
+$script:GATE_VERSION = '0.13.0'
 $ErrorActionPreference = 'Stop'
 
 function Write-Stderr {
@@ -1037,6 +1037,313 @@ function Cmd-Audit {
     if ($ok) { exit 0 } else { exit 1 }
 }
 
+# --- review-pr: re-execute an AI-authored PR's claimed checks ("PR Receipts") ---
+#
+# Native port of done-gate.sh's cmd_review_pr. Parse the testable claims out of
+# a PR description / commit messages ("tests pass", "lint clean", "build
+# succeeds"), auto-resolve the project's REAL commands from its manifests,
+# re-execute them, and print a receipt splitting claims into RE-EXECUTED /
+# ASSERTED / UNPARSED. It never says "VERIFIED": a green re-run proves the
+# command passed here and now, not that the PR is correct.
+#
+# SECURITY: the re-executed command is chosen ONLY from Resolve-PrCommand's
+# fixed per-ecosystem resolution table -- it is NEVER derived from PR text.
+# The PR body selects which CATEGORY (test/lint/build) is claimed; it can
+# never inject a command.
+
+# claim-shape patterns (matched case-insensitively). These are the bash
+# PR_RE_* ERE patterns with POSIX [[:space:]] translated to \s for .NET regex.
+$script:PR_RE_TEST = 'tests?\s+(pass|passed|passing|are\s+green|succeed(s|ed)?)|(all\s+)?tests?\s+green|test\s+suite\s+pass'
+$script:PR_RE_LINT = 'lint(ing)?\s+(clean|passes|passed|is\s+clean)|no\s+lint\s+(error|warning)'
+$script:PR_RE_BUILD = 'builds?\s+(succeed(s|ed)?|passes|passed|works|is\s+green|clean(ly)?|success)|compiles?\s+(clean(ly)?|success)'
+# recognized-but-not-re-executable assertions
+$script:PR_RE_ASSERTED = 'no\s+breaking\s+changes|backwards?\s+compatible|handles?\s+(all\s+)?edge\s+cases|no\s+regressions?|fully\s+tested'
+# vague merge-readiness phrases -> unparsed
+$script:PR_RE_UNPARSED = '(ready|good)\s+to\s+(merge|go)|looks\s+good|lgtm|should\s+be\s+(good|fine|ready)'
+
+# First case-insensitive match of $Pattern in $Text, or '' - mirrors bash's
+# `grep -ioE "$pattern" "$file" | head -n1`.
+function Match-PrClaim {
+    param([string]$Text, [string]$Pattern)
+    $m = [regex]::Match($Text, $Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($m.Success) { return $m.Value }
+    return ''
+}
+
+# Resolve category (test|lint|build) -> the project's real command, or ''.
+# First matching manifest wins. Only well-known canonical commands, no
+# guessing - mirrors bash's pr_resolve exactly, including the textual (not
+# JSON-structural) package.json key check.
+function Resolve-PrCommand {
+    param([string]$Category)
+    if (Test-Path -LiteralPath 'package.json' -PathType Leaf) {
+        $content = Get-Content -LiteralPath 'package.json' -Raw
+        switch ($Category) {
+            'test'  { if ($content -match '"test"\s*:')  { return 'npm test' } }
+            'lint'  { if ($content -match '"lint"\s*:')  { return 'npm run lint' } }
+            'build' { if ($content -match '"build"\s*:') { return 'npm run build' } }
+        }
+        return ''
+    } elseif (Test-Path -LiteralPath 'pyproject.toml' -PathType Leaf) {
+        switch ($Category) {
+            'test' { return 'pytest' }
+            'lint' { return 'ruff check .' }
+            # no single canonical Python build command -> asserted
+            'build' { return '' }
+        }
+        return ''
+    } elseif (Test-Path -LiteralPath 'go.mod' -PathType Leaf) {
+        switch ($Category) {
+            'test'  { return 'go test ./...' }
+            'lint'  { return 'go vet ./...' }
+            'build' { return 'go build ./...' }
+        }
+        return ''
+    }
+    return ''
+}
+
+# Re-execute $Command (a FIXED internal string - never PR-derived) as a child
+# process, combined stdout+stderr redirected straight to $LogPath by cmd.exe
+# itself (mirrors bash's `sh -c "$cmd" > "$logf" 2>&1`). Honors
+# AGENT_DONE_PR_TIMEOUT (default 300s) on a best-effort basis: PowerShell 5.1
+# has no built-in equivalent of coreutils `timeout`, so a timeout is enforced
+# via WaitForExit + taskkill/Kill and reports rc=124 (matching GNU timeout's
+# convention), same as bash's optional `timeout` wrapper.
+function Invoke-ReviewPrCommand {
+    param(
+        [string]$Command,
+        [string]$LogPath
+    )
+    $timeoutSeconds = 300
+    if ($env:AGENT_DONE_PR_TIMEOUT) {
+        $parsed = 0
+        if ([int]::TryParse($env:AGENT_DONE_PR_TIMEOUT, [ref]$parsed) -and $parsed -gt 0) {
+            $timeoutSeconds = $parsed
+        }
+    }
+
+    # Windows PowerShell 5.1 does not define $IsWindows (it is Windows-only); PS7
+    # does. Use cmd.exe on Windows and /bin/sh elsewhere so the same engine runs a
+    # PR's real commands under pwsh on Linux/macOS too (mirrors bash's `sh -c`).
+    $onWindows = (-not (Test-Path variable:IsWindows)) -or $IsWindows
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    if ($onWindows) {
+        $comspec = $env:ComSpec
+        if ([string]::IsNullOrEmpty($comspec)) { $comspec = 'cmd.exe' }
+        $psi.FileName = $comspec
+        # stdin from NUL so a check that reads stdin can't block (mirrors bash).
+        $psi.Arguments = '/c ' + $Command + ' > "' + $LogPath + '" 2>&1 < NUL'
+    } else {
+        $psi.FileName = '/bin/sh'
+        [void]$psi.ArgumentList.Add('-c')
+        [void]$psi.ArgumentList.Add("$Command > `"$LogPath`" 2>&1 < /dev/null")
+    }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = (Get-Location).ProviderPath
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $exited = $proc.WaitForExit($timeoutSeconds * 1000)
+    if (-not $exited) {
+        try { & taskkill /PID $proc.Id /T /F 2>$null | Out-Null } catch {}
+        try { $proc.Kill() } catch {}
+        # [void]: WaitForExit(int) returns a Boolean; letting it leak would make the
+        # function return @($true, 124), so exit_code renders as System.Object[] and
+        # the JSON is invalid — exactly on the hang path the timeout guards.
+        try { [void]$proc.WaitForExit(5000) } catch {}
+        return 124
+    }
+    return [int]$proc.ExitCode
+}
+
+function Cmd-ReviewPr {
+    param([string[]]$Argv)
+    $body = ''
+    $commits = $false
+    $base = ''
+    $json = $false
+    $i = 0
+    while ($i -lt $Argv.Count) {
+        switch ($Argv[$i]) {
+            '--body' {
+                if ($i + 1 -ge $Argv.Count) { Die 'review-pr: --body requires a value' }
+                $body = $Argv[$i + 1]; $i += 2
+            }
+            '--commits' { $commits = $true; $i += 1 }
+            '--base' {
+                if ($i + 1 -ge $Argv.Count) { Die 'review-pr: --base requires a value' }
+                $base = $Argv[$i + 1]; $i += 2
+            }
+            '--json' { $json = $true; $i += 1 }
+            default { Die "review-pr: unexpected arg '$($Argv[$i])'" }
+        }
+    }
+    if ([string]::IsNullOrEmpty($body)) { Die 'review-pr: --body <file|-> is required' }
+
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ('done-gate-pr-' + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    $overall = 0
+    try {
+        $claimFile = Join-Path $tmp 'claims.txt'
+        if ($body -eq '-') {
+            $stdinText = [Console]::In.ReadToEnd()
+            Write-TextFile $claimFile $stdinText
+        } else {
+            if (-not (Test-Path -LiteralPath $body -PathType Leaf)) { Die "review-pr: body not found: $body" }
+            Copy-Item -LiteralPath $body -Destination $claimFile -Force
+        }
+
+        # optionally fold in commit-message subjects/bodies from base..HEAD
+        if ($commits) {
+            if ([string]::IsNullOrEmpty($base)) {
+                $upstreamRaw = $null
+                try {
+                    $upstreamRaw = (& git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>$null)
+                    if ($LASTEXITCODE -ne 0) { $upstreamRaw = $null }
+                } catch { $upstreamRaw = $null }
+                if ($upstreamRaw) { $base = ([string]$upstreamRaw).Trim() } else { $base = 'origin/HEAD' }
+            }
+            try {
+                $logOut = (& git log --format=%B "$base..HEAD" 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $logOut) {
+                    $logText = (@($logOut) -join [Environment]::NewLine) + [Environment]::NewLine
+                    [System.IO.File]::AppendAllText($claimFile, $logText, (Get-Utf8NoBom))
+                }
+            } catch {}
+        }
+
+        $claimText = Get-Content -LiteralPath $claimFile -Raw -ErrorAction SilentlyContinue
+        if ($null -eq $claimText) { $claimText = '' }
+        # Normalize whitespace to single spaces BEFORE matching (mirrors
+        # done-gate.sh): so a word-wrapped claim matches, and so the two engines
+        # agree — .NET \s crosses newlines but bash grep is line-oriented.
+        $claimText = ($claimText -replace '\s+', ' ')
+
+        $reexecRows = New-Object System.Collections.ArrayList
+        $assertedRows = New-Object System.Collections.ArrayList
+        $unparsedRows = New-Object System.Collections.ArrayList
+
+        # 1) re-executable categories: claimed -> resolve -> re-execute (or
+        #    assert if no command resolves).
+        $categories = @(
+            @{ Name = 'test'; Pattern = $script:PR_RE_TEST },
+            @{ Name = 'lint'; Pattern = $script:PR_RE_LINT },
+            @{ Name = 'build'; Pattern = $script:PR_RE_BUILD }
+        )
+        foreach ($catInfo in $categories) {
+            $cat = $catInfo.Name
+            $claim = Match-PrClaim $claimText $catInfo.Pattern
+            if ([string]::IsNullOrEmpty($claim)) { continue }
+            $cmdStr = Resolve-PrCommand $cat
+            if ([string]::IsNullOrEmpty($cmdStr)) {
+                # claimed, but nothing to re-execute against -> asserted (unverified)
+                [void]$assertedRows.Add([pscustomobject]@{
+                    Claim  = $claim
+                    Reason = "no $cat command resolved from the project's manifests"
+                })
+                continue
+            }
+            $logf = Join-Path $tmp ($cat + '.log')
+            # NOTE: $cmdStr is a fixed internal string (see Resolve-PrCommand),
+            # never PR-derived. A claimed check that FAILS on re-run is a real
+            # receipt, not a script error.
+            $rc = Invoke-ReviewPrCommand -Command $cmdStr -LogPath $logf
+            $sha = ''
+            try { $sha = Get-Sha256OfFile $logf } catch { $sha = '' }
+            if ($rc -eq 0) { $status = 'pass' } else { $status = 'fail'; $overall = 1 }
+            [void]$reexecRows.Add([pscustomobject]@{
+                Claim    = $claim
+                Command  = $cmdStr
+                ExitCode = $rc
+                Sha256   = $sha
+                Status   = $status
+            })
+        }
+
+        # 2) recognized-but-not-re-executable assertions.
+        $aClaim = Match-PrClaim $claimText $script:PR_RE_ASSERTED
+        if (-not [string]::IsNullOrEmpty($aClaim)) {
+            [void]$assertedRows.Add([pscustomobject]@{
+                Claim  = $aClaim
+                Reason = 'no command maps to this claim'
+            })
+        }
+
+        # 3) vague / unparsed claim-shaped phrases.
+        $uClaim = Match-PrClaim $claimText $script:PR_RE_UNPARSED
+        if (-not [string]::IsNullOrEmpty($uClaim)) {
+            [void]$unparsedRows.Add($uClaim)
+        }
+
+        $nReexec = $reexecRows.Count
+        $nAsserted = $assertedRows.Count
+        $nUnparsed = $unparsedRows.Count
+
+        if ($json) {
+            $rowsR = ($reexecRows | ForEach-Object {
+                '{{"claim":"{0}","command":"{1}","exit_code":{2},"sha256":"{3}","status":"{4}"}}' -f `
+                    (Json-Escape $_.Claim), (Json-Escape $_.Command), $_.ExitCode, (Json-Escape $_.Sha256), $_.Status
+            }) -join ','
+            $rowsA = ($assertedRows | ForEach-Object {
+                '{{"claim":"{0}","reason":"{1}"}}' -f (Json-Escape $_.Claim), (Json-Escape $_.Reason)
+            }) -join ','
+            $rowsU = ($unparsedRows | ForEach-Object { '"{0}"' -f (Json-Escape $_) }) -join ','
+
+            $okText = if ($overall -eq 0) { 'true' } else { 'false' }
+            $receipt = ('{{"ok":{0},"summary":{{"reexecuted":{1},"asserted":{2},"unparsed":{3}}},"reexecuted":[{4}],"asserted":[{5}],"unparsed":[{6}]}}' -f `
+                $okText, $nReexec, $nAsserted, $nUnparsed, $rowsR, $rowsA, $rowsU)
+            Write-Output $receipt
+        } else {
+            $dash = [string][char]0x2014
+            Write-Output '# PR Receipts'
+            Write-Output ''
+            Write-Output ("RE-EXECUTED ({0} claim(s) re-run)" -f $nReexec)
+            if ($nReexec -eq 0) {
+                Write-Output '  (none)'
+            } else {
+                foreach ($row in $reexecRows) {
+                    $mark = if ($row.Status -eq 'pass') { 'PASS' } else { 'FAIL' }
+                    $shaShort = $row.Sha256.Substring(0, [Math]::Min(12, $row.Sha256.Length))
+                    Write-Output ('  {0,-4} "{1}"  -> {2}  exit={3}  sha256={4}' -f $mark, $row.Claim, $row.Command, $row.ExitCode, $shaShort)
+                }
+            }
+            Write-Output ''
+            Write-Output ("ASSERTED ({0} claim(s), no re-executable evidence)" -f $nAsserted)
+            if ($nAsserted -eq 0) {
+                Write-Output '  (none)'
+            } else {
+                foreach ($row in $assertedRows) {
+                    Write-Output ('  ?    "{0}"  -- {1}' -f $row.Claim, $row.Reason)
+                }
+            }
+            Write-Output ''
+            Write-Output ("UNPARSED ({0} claim-like phrase(s), not confidently matched)" -f $nUnparsed)
+            if ($nUnparsed -eq 0) {
+                Write-Output '  (none)'
+            } else {
+                foreach ($ph in $unparsedRows) {
+                    Write-Output ('  .    "{0}"' -f $ph)
+                }
+            }
+            Write-Stderr ''
+            Write-Stderr 'A green re-run proves the command passed here and now, not that the PR is correct.'
+            if ($overall -eq 0) {
+                Write-Stderr ("done-gate: review-pr OK $dash {0} re-executed claim(s) passed" -f $nReexec)
+            } else {
+                Write-Stderr "done-gate: review-pr FAIL $dash a re-executed claim did not pass"
+            }
+        }
+    } finally {
+        Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+    }
+
+    exit $overall
+}
+
 $script:ROOT = Get-Root
 $script:PROOF_DIR = if ($env:AGENT_DONE_DIR) { $env:AGENT_DONE_DIR } else { Join-Path $script:ROOT '.agent-proof' }
 
@@ -1056,11 +1363,12 @@ switch ($sub) {
     'verify' { Cmd-Verify $rest }
     'show' { Cmd-Show $rest }
     'audit' { Cmd-Audit $rest }
+    'review-pr' { Cmd-ReviewPr $rest }
     '-h' { Usage }
     '--help' { Usage }
     'help' { Usage }
     default {
         Usage
-        Die "unknown subcommand '$sub' (capture | assert | verify | show | audit)"
+        Die "unknown subcommand '$sub' (capture | assert | verify | show | audit | review-pr)"
     }
 }

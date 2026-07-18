@@ -632,7 +632,7 @@ try {
 $r = Invoke-Gate $d (@('capture', '--label', 'envelope', '--') + (PassingCommand))
 $receipt = Latest-Receipt $r.ProofDir
 if ($receipt.schema_version -eq 2 -and $receipt.disposition -eq 'reexecuted' `
-        -and $receipt.producer -eq 'done-gate.ps1@0.12.0' `
+        -and $receipt.producer -eq 'done-gate.ps1@0.13.0' `
         -and $receipt.repo -eq 'https://example.invalid/project.git' `
         -and $receipt.subject -eq 'init' -and -not [string]::IsNullOrEmpty($receipt.host_os)) {
     Ok 'capture writes the v2 evidence envelope with repo, subject and producer'
@@ -935,6 +935,104 @@ try {
 } catch {
     Bad "audit substring binding did not parse: $($a.Stdout)"
 }
+
+Write-Output '== PR Receipts / review-pr (v0.13) =='
+
+$npm = [bool](Get-Command npm -ErrorAction SilentlyContinue)
+
+# 33. Node project: passing test + failing lint are RE-EXECUTED; build (no script)
+# + "no breaking changes" ASSERTED; vague phrase UNPARSED; failed re-run -> exit 1.
+if ($npm) {
+    $d = New-GitSandbox
+    $proof = Join-Path $d '.proof'
+    [IO.File]::WriteAllText((Join-Path $d 'package.json'), '{"name":"demo","version":"1.0.0","scripts":{"test":"node -e \"process.exit(0)\"","lint":"node -e \"process.exit(1)\""}}', $Utf8NoBom)
+    [IO.File]::WriteAllText((Join-Path $d 'pr.md'), "Tests pass and lint is clean. The build succeeds.`nNo breaking changes. Should be good to merge now.`n", $Utf8NoBom)
+    $a = Invoke-Gate $d @('review-pr', '--body', (Join-Path $d 'pr.md'), '--json') $proof
+    try {
+        $j = $a.Stdout | ConvertFrom-Json
+        $tp = @($j.reexecuted | Where-Object { $_.command -eq 'npm test' })[0]
+        $lc = @($j.reexecuted | Where-Object { $_.command -eq 'npm run lint' })[0]
+        if ($j.summary.reexecuted -eq 2 -and $tp.status -eq 'pass' -and $tp.exit_code -eq 0 `
+                -and $lc.status -eq 'fail' -and $lc.exit_code -ne 0 `
+                -and $j.summary.asserted -ge 2 -and $j.summary.unparsed -ge 1 `
+                -and $j.ok -eq $false -and $a.ExitCode -eq 1) {
+            Ok 'review-pr re-executes Node claims (pass+fail), asserts + unparses, exits non-zero'
+        } else { Bad "review-pr Node (exit=$($a.ExitCode)): $($a.Stdout)" }
+    } catch { Bad "review-pr Node did not parse: $($a.Stdout)" }
+} else { Ok 'review-pr Node test skipped (no npm on PATH)' }
+
+# 34. command resolution per ecosystem — assert the resolved command string,
+# independent of whether the toolchain is installed.
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+[IO.File]::WriteAllText((Join-Path $d 'pyproject.toml'), "[project]`nname = `"x`"`n", $Utf8NoBom)
+[IO.File]::WriteAllText((Join-Path $d 'pr.md'), "Tests pass.`n", $Utf8NoBom)
+$a = Invoke-Gate $d @('review-pr', '--body', (Join-Path $d 'pr.md'), '--json') $proof
+$d2 = New-GitSandbox
+$proof2 = Join-Path $d2 '.proof'
+[IO.File]::WriteAllText((Join-Path $d2 'go.mod'), "module x`n`ngo 1.20`n", $Utf8NoBom)
+[IO.File]::WriteAllText((Join-Path $d2 'pr.md'), "Tests pass.`n", $Utf8NoBom)
+$a2 = Invoke-Gate $d2 @('review-pr', '--body', (Join-Path $d2 'pr.md'), '--json') $proof2
+try {
+    $cpy = ($a.Stdout | ConvertFrom-Json).reexecuted[0].command
+    $cgo = ($a2.Stdout | ConvertFrom-Json).reexecuted[0].command
+    if ($cpy -eq 'pytest' -and $cgo -eq 'go test ./...') {
+        Ok 'review-pr resolves the real command per ecosystem (pytest / go test)'
+    } else { Bad "review-pr command resolution (py=$cpy go=$cgo)" }
+} catch { Bad "review-pr resolution did not parse" }
+
+# 35. SECURITY: a claim line cannot inject a command — the re-run stays the
+# manifest-resolved command, and nothing embedded in the PR text runs.
+if ($npm) {
+    $d = New-GitSandbox
+    $proof = Join-Path $d '.proof'
+    [IO.File]::WriteAllText((Join-Path $d 'package.json'), '{"name":"demo","version":"1.0.0","scripts":{"test":"node -e \"process.exit(0)\""}}', $Utf8NoBom)
+    [IO.File]::WriteAllText((Join-Path $d 'pr.md'), "tests pass & echo pwned > PWNED`n", $Utf8NoBom)
+    $a = Invoke-Gate $d @('review-pr', '--body', (Join-Path $d 'pr.md'), '--json') $proof
+    try {
+        $cmd = ($a.Stdout | ConvertFrom-Json).reexecuted[0].command
+        if ($cmd -eq 'npm test' -and -not (Test-Path -LiteralPath (Join-Path $d 'PWNED'))) {
+            Ok 'review-pr does not execute commands embedded in PR text (no injection)'
+        } else { Bad "review-pr injection (cmd=$cmd pwned=$(Test-Path (Join-Path $d 'PWNED')))" }
+    } catch { Bad "review-pr injection did not parse: $($a.Stdout)" }
+} else { Ok 'review-pr injection test skipped (no npm on PATH)' }
+
+# 36. review-pr rejects a missing --body with exit 2.
+$d = New-GitSandbox
+$a = Invoke-Gate $d @('review-pr')
+if ($a.ExitCode -eq 2) { Ok 'review-pr requires --body (exit 2)' } else { Bad "review-pr usage guard ($($a.ExitCode))" }
+
+# 37. the receipt never says VERIFIED (label discipline).
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+[IO.File]::WriteAllText((Join-Path $d 'pr.md'), "Tests pass. No breaking changes. Should be good.`n", $Utf8NoBom)
+$a = Invoke-Gate $d @('review-pr', '--body', (Join-Path $d 'pr.md')) $proof
+$txt = $a.Stdout + "`n" + $a.Stderr
+if ($txt -match 'RE-EXECUTED|ASSERTED|UNPARSED' -and $txt -notmatch '(?i)verified') {
+    Ok 'review-pr uses RE-EXECUTED/ASSERTED/UNPARSED, never VERIFIED'
+} else { Bad 'review-pr label discipline' }
+
+# 38. the per-command timeout bounds a hanging re-run, reports exit 124, and stays
+# valid JSON (regression for the WaitForExit Boolean leak).
+if ($npm) {
+    $d = New-GitSandbox
+    $proof = Join-Path $d '.proof'
+    [IO.File]::WriteAllText((Join-Path $d 'package.json'), '{"name":"demo","version":"1.0.0","scripts":{"test":"node -e \"setTimeout(function(){},8000)\""}}', $Utf8NoBom)
+    [IO.File]::WriteAllText((Join-Path $d 'pr.md'), "Tests pass.`n", $Utf8NoBom)
+    $old = $env:AGENT_DONE_PR_TIMEOUT
+    try {
+        $env:AGENT_DONE_PR_TIMEOUT = '1'
+        $a = Invoke-Gate $d @('review-pr', '--body', (Join-Path $d 'pr.md'), '--json') $proof
+    } finally {
+        if ($null -eq $old) { Remove-Item Env:\AGENT_DONE_PR_TIMEOUT -ErrorAction SilentlyContinue } else { $env:AGENT_DONE_PR_TIMEOUT = $old }
+    }
+    try {
+        $c = ($a.Stdout | ConvertFrom-Json).reexecuted[0]
+        if ($c.exit_code -eq 124 -and $c.status -eq 'fail') {
+            Ok 'review-pr bounds a hanging re-run with a timeout (exit 124, valid JSON)'
+        } else { Bad "review-pr timeout (exit_code=$($c.exit_code) status=$($c.status))" }
+    } catch { Bad "review-pr timeout produced invalid JSON: $($a.Stdout)" }
+} else { Ok 'review-pr timeout test skipped (no npm)' }
 
 Write-Output ''
 Write-Output ("Result: {0} passed, {1} failed" -f $pass, $fail)
