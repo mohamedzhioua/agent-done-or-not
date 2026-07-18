@@ -1,11 +1,11 @@
 {
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Proof-of-done gate that makes AI agents prove a task is done before claiming it.",
   "homepage": "https://github.com/mohamedzhioua/agent-done-or-not",
   "license": "MIT",
-  "url": "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.11.0.tar.gz",
-  "hash": "2ea5b20bfd70df146b0b75627194a8373ea5784166c7cc2f1c1366f618e00f75",
-  "extract_dir": "agent-done-or-not-0.11.0",
+  "url": "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.12.0.tar.gz",
+  "hash": "da39d79e77c01843dae95bef69437c866d9dd30a92438d6151c79c55b80d0ea3",
+  "extract_dir": "agent-done-or-not-0.12.0",
   "pre_install": [
     "# Ship a .cmd launcher that forwards to the bundled native PowerShell",
     "# engine. %~dp0 resolves to this app dir, and cwd is preserved so",

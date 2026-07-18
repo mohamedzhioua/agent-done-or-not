@@ -11,14 +11,15 @@
 class AgentDoneOrNot < Formula
   desc "Proof-of-done gate that makes AI agents prove a task is done before claiming it"
   homepage "https://github.com/mohamedzhioua/agent-done-or-not"
-  url "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.11.0.tar.gz"
-  sha256 "2ea5b20bfd70df146b0b75627194a8373ea5784166c7cc2f1c1366f618e00f75"
+  url "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.12.0.tar.gz"
+  sha256 "da39d79e77c01843dae95bef69437c866d9dd30a92438d6151c79c55b80d0ea3"
   license "MIT"
 
   depends_on "bash"
 
   def install
-    libexec.install "done-gate.sh", "stop-gate.sh", "proof.schema.json", "policy.schema.json"
+    libexec.install "done-gate.sh", "stop-gate.sh", "subagent-audit.sh",
+                    "proof.schema.json", "claim.schema.json", "policy.schema.json"
 
     bash = Formula["bash"].opt_bin/"bash"
 
@@ -31,6 +32,11 @@ class AgentDoneOrNot < Formula
       #!/bin/bash
       exec "#{bash}" "#{libexec}/stop-gate.sh" "$@"
     SH
+
+    (bin/"agent-done-subagent-audit").write <<~SH
+      #!/bin/bash
+      exec "#{bash}" "#{libexec}/subagent-audit.sh" "$@"
+    SH
   end
 
   def caveats
@@ -39,6 +45,11 @@ class AgentDoneOrNot < Formula
       wire the Stop hook in your .claude/settings.json to:
 
         #{opt_bin}/agent-done-stop-gate
+
+      To audit a subagent's claims before the parent trusts them, wire the
+      SubagentStop hook to:
+
+        #{opt_bin}/agent-done-subagent-audit
 
       See: #{homepage}/blob/main/examples/install.md
     EOS
