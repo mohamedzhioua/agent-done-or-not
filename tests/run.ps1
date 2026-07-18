@@ -632,7 +632,7 @@ try {
 $r = Invoke-Gate $d (@('capture', '--label', 'envelope', '--') + (PassingCommand))
 $receipt = Latest-Receipt $r.ProofDir
 if ($receipt.schema_version -eq 2 -and $receipt.disposition -eq 'reexecuted' `
-        -and $receipt.producer -eq 'done-gate.ps1@0.11.0' `
+        -and $receipt.producer -eq 'done-gate.ps1@0.12.0' `
         -and $receipt.repo -eq 'https://example.invalid/project.git' `
         -and $receipt.subject -eq 'init' -and -not [string]::IsNullOrEmpty($receipt.host_os)) {
     Ok 'capture writes the v2 evidence envelope with repo, subject and producer'
@@ -799,6 +799,141 @@ if (@('linux', 'darwin', 'windows') -contains $receipt.host_os) {
     Ok 'host_os is a canonical, engine-portable value'
 } else {
     Bad "host_os canonicalization (got $($receipt.host_os))"
+}
+
+Write-Output '== claim audit (v0.12) =='
+
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+# a sandbox with test(pass), lint(fail), build(pass) captured into ONE run
+function New-AuditSandbox {
+    $d = New-GitSandbox
+    $proof = Join-Path $d '.proof'
+    $null = Invoke-Gate $d (@('capture', '--run', 'myrun', '--label', 'test', '--') + (PassingCommand)) $proof
+    $null = Invoke-Gate $d (@('capture', '--run', 'myrun', '--label', 'lint', '--') + (FailingCommand)) $proof
+    $null = Invoke-Gate $d (@('capture', '--run', 'myrun', '--label', 'build', '--') + (PassingCommand)) $proof
+    return [pscustomobject]@{ Dir = $d; Proof = $proof }
+}
+
+function Invoke-SubagentAudit {
+    param([string]$WorkDir, [string]$ProofDir, [string]$Payload)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $PSExe
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $Repo 'subagent-audit.ps1') + '"'
+    $psi.WorkingDirectory = $WorkDir
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.EnvironmentVariables['AGENT_DONE_DIR'] = $ProofDir
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    [void]$p.Start()
+    $p.StandardInput.Write($Payload)
+    $p.StandardInput.Close()
+    $null = $p.StandardOutput.ReadToEnd()
+    $null = $p.StandardError.ReadToEnd()
+    $p.WaitForExit()
+    return $p.ExitCode
+}
+
+# 27. marker verdicts (BACKED / MISREPORTED / UNBACKED / INTEGRITY_MISMATCH) and a
+# non-zero exit — asserted via --json (byte-identical to bash; human em dash is a
+# pre-existing PS 5.1 console-encoding quirk shared with `show`).
+$s = New-AuditSandbox
+$lines = @(Read-LedgerLines $s.Proof)
+$testLine = $lines | Where-Object { $_ -match '"label":"test"' } | Select-Object -First 1
+$tsha = ([regex]::Match($testLine, '"sha256":"([0-9a-f]+)"')).Groups[1].Value
+$summary = Join-Path $s.Dir 'summary.md'
+$md = '<agent-done:claim label="test" exit="0" sha256="' + $tsha + '" />' + "`n" +
+      '<agent-done:claim label="lint" exit="0" />' + "`n" +
+      '<agent-done:claim label="integration" exit="0" />' + "`n" +
+      '<agent-done:claim label="build" exit="0" sha256="deadbeef" />' + "`n"
+[IO.File]::WriteAllText($summary, $md, $Utf8NoBom)
+$a = Invoke-Gate $s.Dir @('audit', '--transcript', $summary, '--run', 'myrun', '--json') $s.Proof
+try {
+    $j = $a.Stdout | ConvertFrom-Json
+    $v = @{}
+    foreach ($c in $j.claims) { $v[$c.label] = $c.verdict }
+    if ($v['test'] -eq 'BACKED' -and $v['lint'] -eq 'MISREPORTED' -and $v['integration'] -eq 'UNBACKED' `
+            -and $v['build'] -eq 'INTEGRITY_MISMATCH' -and $j.ok -eq $false -and $a.ExitCode -eq 1) {
+        Ok 'audit marker verdicts (backed/misreported/unbacked/integrity) + non-zero exit'
+    } else {
+        Bad "audit marker verdicts (exit=$($a.ExitCode)) out=$($a.Stdout)"
+    }
+} catch {
+    Bad "audit marker verdicts did not produce parseable JSON: $($a.Stdout)"
+}
+
+# 28. every claim backed -> exit 0.
+$s = New-AuditSandbox
+$okmd = Join-Path $s.Dir 'ok.md'
+[IO.File]::WriteAllText($okmd, '<agent-done:claim label="test" exit="0" />' + "`n" + '<agent-done:claim label="build" exit="0" />' + "`n", $Utf8NoBom)
+$a = Invoke-Gate $s.Dir @('audit', '--transcript', $okmd, '--run', 'myrun') $s.Proof
+if ($a.ExitCode -eq 0) { Ok 'audit exits 0 when every claim is backed' } else { Bad "audit all-backed exit ($($a.ExitCode))" }
+
+# 29. SubagentStop hook: blocks unbacked (2), allows backed (0), fails open on an
+# ambiguous payload and on the loop guard.
+$s = New-AuditSandbox
+$tbad = Join-Path $s.Dir 't_bad'
+$tgood = Join-Path $s.Dir 't_good'
+[IO.File]::WriteAllText($tbad, 'report <agent-done:claim label="integration" exit="0" />' + "`n", $Utf8NoBom)
+[IO.File]::WriteAllText($tgood, 'report <agent-done:claim label="test" exit="0" />' + "`n", $Utf8NoBom)
+$pbad = ($tbad -replace '\\', '/')
+$pgood = ($tgood -replace '\\', '/')
+$block = Invoke-SubagentAudit $s.Dir $s.Proof ('{"session_id":"s","stop_hook_active":false,"transcript_path":"' + $pbad + '"}')
+$allow = Invoke-SubagentAudit $s.Dir $s.Proof ('{"session_id":"s","stop_hook_active":false,"transcript_path":"' + $pgood + '"}')
+$amb = Invoke-SubagentAudit $s.Dir $s.Proof '{"session_id":"s","stop_hook_active":false}'
+$loop = Invoke-SubagentAudit $s.Dir $s.Proof ('{"session_id":"s","stop_hook_active":true,"transcript_path":"' + $pbad + '"}')
+if ($block -eq 2 -and $allow -eq 0 -and $amb -eq 0 -and $loop -eq 0) {
+    Ok 'subagent-audit.ps1 blocks unbacked, allows backed, fails open on ambiguity/loop'
+} else {
+    Bad "subagent-audit.ps1 hook (block=$block allow=$allow amb=$amb loop=$loop)"
+}
+
+# 30. audit rejects a missing --transcript with exit 2.
+$d = New-GitSandbox
+$a = Invoke-Gate $d @('audit')
+if ($a.ExitCode -eq 2) { Ok 'audit requires --transcript (exit 2)' } else { Bad "audit usage guard ($($a.ExitCode))" }
+
+# 31. a zero-looking-but-not-"0" / garbage claimed exit on a FAILING check must
+# still be MISREPORTED — cannot be laundered into BACKED (mirrors bash A9).
+$s = New-AuditSandbox
+$bad31 = $false
+foreach ($e in @('00', ' 0', 'fail')) {
+    $md = Join-Path $s.Dir 'e.md'
+    [IO.File]::WriteAllText($md, ('<agent-done:claim label="lint" exit="' + $e + '" />' + "`n"), $Utf8NoBom)
+    $a = Invoke-Gate $s.Dir @('audit', '--transcript', $md, '--run', 'myrun', '--json') $s.Proof
+    try { $vv = ($a.Stdout | ConvertFrom-Json).claims[0].verdict } catch { $vv = 'ERR' }
+    if ($vv -ne 'MISREPORTED') { $bad31 = $true }
+}
+$md = Join-Path $s.Dir 'e.md'
+[IO.File]::WriteAllText($md, '<agent-done:claim label="lint" exit="1" />' + "`n", $Utf8NoBom)
+$a = Invoke-Gate $s.Dir @('audit', '--transcript', $md, '--run', 'myrun', '--json') $s.Proof
+try { $vv1 = ($a.Stdout | ConvertFrom-Json).claims[0].verdict } catch { $vv1 = 'ERR' }
+if (-not $bad31 -and $vv1 -eq 'BACKED') {
+    Ok 'a crafted claimed exit cannot launder a failing check into BACKED'
+} else {
+    Bad "audit misreported normalization (00/ 0/fail bad=$bad31, exit1=$vv1)"
+}
+
+# 32. the heuristic binds labels on a WHOLE token only (mirrors bash A10).
+$d = New-GitSandbox
+$proof = Join-Path $d '.proof'
+$null = Invoke-Gate $d (@('capture', '--run', 'wb', '--label', 'test', '--') + (FailingCommand)) $proof
+$pmd = Join-Path $d 'p.md'
+[IO.File]::WriteAllText($pmd, 'This is the greatest refactor, all verified and shipped.' + "`n", $Utf8NoBom)
+$a = Invoke-Gate $d @('audit', '--transcript', $pmd, '--run', 'wb', '--json') $proof
+try {
+    $j = $a.Stdout | ConvertFrom-Json
+    $boundTest = @($j.claims | Where-Object { $_.label -eq 'test' }).Count
+    if ($j.ok -eq $true -and $boundTest -eq 0) {
+        Ok 'heuristic binds whole-token labels only (no substring false positive)'
+    } else {
+        Bad "audit substring binding (ok=$($j.ok) boundTest=$boundTest)"
+    }
+} catch {
+    Bad "audit substring binding did not parse: $($a.Stdout)"
 }
 
 Write-Output ''

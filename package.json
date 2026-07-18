@@ -1,6 +1,6 @@
 {
   "name": "agent-done-or-not",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Proof-of-done gate that makes AI agents prove a task is done before claiming it.",
   "bin": {
     "agent-done-or-not": "bin/agent-done-or-not.js"
@@ -14,6 +14,8 @@
     "stop-gate.sh",
     "done-gate.ps1",
     "stop-gate.ps1",
+    "subagent-audit.sh",
+    "subagent-audit.ps1",
     "proof.schema.json",
     "claim.schema.json",
     "policy.schema.json",

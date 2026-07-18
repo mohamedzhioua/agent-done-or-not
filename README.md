@@ -362,6 +362,39 @@ npx agent-done-or-not report --format pr     # paste into a PR / issue
 In CI, the [GitHub Action](#github-action) can post this as a sticky PR comment —
 set `pr-comment: "true"`.
 
+## Audit the agent's claims
+
+`capture` records what actually ran; **`audit`** checks what the agent *said*
+against those receipts. It reads the agent's claims — from structured markers it
+was told to emit, with a conservative transcript-heuristic fallback — and diffs
+each against the ledger:
+
+```bash
+# The agent emits a marker per claim in its summary:
+#   <agent-done:claim label="test" exit="0" />
+done-gate.sh audit --transcript summary.md
+```
+
+```text
+test          marker   BACKED             claimed[exit=0] recorded[exit=0 sha=9f2c…]
+integration   marker   UNBACKED           claimed[exit=0] recorded[— asserted, never run]
+lint          marker   MISREPORTED        claimed[exit=0] recorded[exit=1]
+done-gate: audit FAIL — 1 unbacked, 1 misreported, 0 integrity-mismatch
+```
+
+Per-claim verdicts: **BACKED** · **UNBACKED** (asserted, never run) ·
+**MISREPORTED** (claimed exit 0, recorded non-zero) · **INTEGRITY_MISMATCH**
+(claimed hash ≠ recorded hash) · **UNPARSED** (claim-shaped text with no bindable
+label — surfaced, never counted as backed). It exits non-zero on any unbacked,
+misreported, or integrity-mismatched claim, and prints `--json` for gates. Only
+execution receipts can back a claim; a hash mismatch is reported as a mismatch,
+never as "TAMPERED" (a hash proves *what* differs, not *who* changed it).
+
+For subagents, **`subagent-audit.sh`** is a SubagentStop hook that audits a
+subagent's summary before the parent trusts it — blocking only on a real finding
+and failing open otherwise. See **[`docs/markers.md`](docs/markers.md)** for the
+paste-ready marker contract, the agent instruction snippet, and the hook wiring.
+
 ## How it works
 
 1. **`done-gate.sh capture`** runs your check, streams its output, and appends a

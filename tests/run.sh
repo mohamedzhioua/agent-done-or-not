@@ -723,7 +723,7 @@ d="$(newsandbox)"
 ( cd "$d" && git remote add origin https://example.invalid/project.git \
   && bash "$DONE_GATE" capture --label envelope -- true >/dev/null 2>&1 )
 ledger="$(printf '%s\n' "$d"/.agent-proof/*/ledger.jsonl)"
-if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['schema_version']==2 and d['disposition']=='reexecuted'; assert d['producer']=='done-gate.sh@0.11.0'; assert d['repo']=='https://example.invalid/project.git' and d['subject']=='init'; assert isinstance(d['host_os'],str) and d['host_os']" "$ledger" >/dev/null 2>&1; then
+if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['schema_version']==2 and d['disposition']=='reexecuted'; assert d['producer']=='done-gate.sh@0.12.0'; assert d['repo']=='https://example.invalid/project.git' and d['subject']=='init'; assert isinstance(d['host_os'],str) and d['host_os']" "$ledger" >/dev/null 2>&1; then
   ok "capture writes the v2 evidence envelope with repo, subject and producer"
 else bad "evidence envelope fields"; fi
 
@@ -783,7 +783,7 @@ else bad "commit subject JSON escaping (got: $line)"; fi
 d="$(newsandbox)"
 ( cd "$d" && INPUT_CHECKS='test: true' AGENT_DONE_GATE="$DONE_GATE" bash "$REPO/ci-verify.sh" >/dev/null 2>&1 )
 ledger="$(printf '%s\n' "$d"/.agent-proof/*/ledger.jsonl)"
-if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['verifier']=='ci-verify.sh@0.11.0'" "$ledger" >/dev/null 2>&1; then
+if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['verifier']=='ci-verify.sh@0.12.0'" "$ledger" >/dev/null 2>&1; then
   ok "ci-verify receipts carry verifier identity"
 else bad "ci-verify verifier identity"; fi
 
@@ -841,6 +841,140 @@ if grep -q '"const": "reexecuted"' "$REPO/proof.schema.json" \
    && python3 -c "import json,sys; json.load(open(sys.argv[1], encoding='utf-8'))" "$REPO/claim.schema.json" >/dev/null 2>&1; then
   ok "proof.schema pins reexecuted and claim.schema.json documents claim/verdict records"
 else bad "schema separation (proof.schema const / claim.schema.json)"; fi
+
+echo "== claim audit (v0.12) =="
+
+# helper: a sandbox with a ledger of test(pass), lint(fail), build(pass) in ONE
+# run. Captures are separated by ';' NOT '&&' — capture exits with the wrapped
+# command's own code, so the failing `lint` capture must not short-circuit the
+# rest.
+audit_sandbox() {
+  local d; d="$(newsandbox)"
+  ( cd "$d"
+    bash "$DONE_GATE" capture --run auditrun --label test  -- sh -c 'echo hi; exit 0' >/dev/null 2>&1
+    bash "$DONE_GATE" capture --run auditrun --label lint  -- sh -c 'exit 1'          >/dev/null 2>&1
+    bash "$DONE_GATE" capture --run auditrun --label build -- sh -c 'echo built'      >/dev/null 2>&1 ) || true
+  printf '%s' "$d"
+}
+
+# A1. marker verdicts: BACKED / MISREPORTED / UNBACKED / INTEGRITY_MISMATCH, and a
+# non-zero exit when any claim is unbacked/misreported/integrity-mismatch.
+d="$(audit_sandbox)"
+tsha="$( ( cd "$d" && grep -F '"label":"test"' .agent-proof/auditrun/ledger.jsonl ) | grep -oE '"sha256":"[0-9a-f]+"' | sed -E 's/.*"([0-9a-f]+)".*/\1/')"
+cat > "$d/summary.md" <<EOF
+<agent-done:claim label="test" exit="0" sha256="$tsha" />
+<agent-done:claim label="lint" exit="0" />
+<agent-done:claim label="integration" exit="0" />
+<agent-done:claim label="build" exit="0" sha256="deadbeef" />
+EOF
+out="$( ( cd "$d" && bash "$DONE_GATE" audit --transcript summary.md --run auditrun --json 2>/dev/null ) )"; audit_rc=$?
+if printf '%s' "$out" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+v={c["label"]:c["verdict"] for c in d["claims"]}
+assert v["test"]=="BACKED", v
+assert v["lint"]=="MISREPORTED", v
+assert v["integration"]=="UNBACKED", v
+assert v["build"]=="INTEGRITY_MISMATCH", v
+assert d["ok"] is False and d["summary"]["claims"]==4
+' >/dev/null 2>&1 && [ "$audit_rc" != "0" ]; then
+  ok "audit marker verdicts (backed/misreported/unbacked/integrity) + non-zero exit"
+else bad "audit marker verdicts (rc=$audit_rc) out=$out"; fi
+
+# A2. all claims backed -> exit 0.
+d="$(audit_sandbox)"
+printf '<agent-done:claim label="test" exit="0" />\n<agent-done:claim label="build" exit="0" />\n' > "$d/ok.md"
+( cd "$d" && bash "$DONE_GATE" audit --transcript ok.md --run auditrun >/dev/null 2>&1 ); rc=$?
+[ "$rc" = "0" ] && ok "audit exits 0 when every claim is backed" || bad "audit all-backed exit (rc=$rc)"
+
+# A3. an asserted claim/verdict ledger record can NOT back a claim (ties to R1).
+d="$(newsandbox)"
+mkdir -p "$d/.agent-proof/claimrun"
+sha0='0000000000000000000000000000000000000000000000000000000000000000'
+printf '{"label":"test","command":"true","exit_code":0,"sha256":"%s","log":"x","at":"2026-07-18T00:00:00Z","epoch":%s,"session":"","schema_version":2,"disposition":"asserted"}\n' "$sha0" "$(date +%s)" > "$d/.agent-proof/claimrun/ledger.jsonl"
+printf '<agent-done:claim label="test" exit="0" />\n' > "$d/s.md"
+( cd "$d" && bash "$DONE_GATE" audit --transcript s.md --run claimrun --json 2>/dev/null ) > "$d/o.json"
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["claims"][0]["verdict"]=="UNBACKED"' "$d/o.json" >/dev/null 2>&1; then
+  ok "an asserted ledger record cannot back a claim (verdict=UNBACKED)"
+else bad "audit vs asserted ledger record ($(cat "$d/o.json"))"; fi
+
+# A4. heuristic fallback: a claim-shaped line with no marker is tagged inferred and
+# bound to a known label; an unbindable claim line is UNPARSED (not counted backed).
+d="$(audit_sandbox)"
+printf 'The build succeeds cleanly.\nEverything is verified and shipped.\n' > "$d/prose.md"
+( cd "$d" && bash "$DONE_GATE" audit --transcript prose.md --run auditrun --json 2>/dev/null ) > "$d/p.json"
+if python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+srcs=[c["source"] for c in d["claims"]]
+assert all(s=="inferred" for s in srcs) and d["summary"]["inferred"]>=1, d["summary"]
+assert d["summary"]["unparsed"]>=1, d["summary"]
+labels=[c["label"] for c in d["claims"] if c["source"]=="inferred" and c["label"]]
+assert "build" in labels, labels
+' "$d/p.json" >/dev/null 2>&1; then
+  ok "audit heuristic fallback tags inferred claims and surfaces unparsed"
+else bad "audit heuristic fallback ($(cat "$d/p.json"))"; fi
+
+# A5. --transcript - reads the transcript from stdin.
+d="$(audit_sandbox)"
+rc=0
+( cd "$d" && printf '<agent-done:claim label="integration" exit="0" />\n' | bash "$DONE_GATE" audit --transcript - --run auditrun >/dev/null 2>&1 ) || rc=$?
+[ "$rc" != "0" ] && ok "audit reads a transcript from stdin (--transcript -)" || bad "audit stdin transcript (rc=$rc)"
+
+# A6. SubagentStop hook: blocks (exit 2) on an unbacked subagent claim, allows a
+# backed one, and FAILS OPEN on an ambiguous payload / loop-guard.
+d="$(audit_sandbox)"
+printf 'subagent report. <agent-done:claim label="integration" exit="0" />\n' > "$d/t_bad"
+printf 'subagent report. <agent-done:claim label="test" exit="0" />\n' > "$d/t_good"
+HOOK="$REPO/subagent-audit.sh"
+( cd "$d" && printf '{"session_id":"s","stop_hook_active":false,"transcript_path":"%s"}' "$d/t_bad" | bash "$HOOK" >/dev/null 2>&1 ); block_rc=$?
+( cd "$d" && printf '{"session_id":"s","stop_hook_active":false,"transcript_path":"%s"}' "$d/t_good" | bash "$HOOK" >/dev/null 2>&1 ); allow_rc=$?
+( cd "$d" && printf '{"session_id":"s","stop_hook_active":false}' | bash "$HOOK" >/dev/null 2>&1 ); amb_rc=$?
+( cd "$d" && printf '{"session_id":"s","stop_hook_active":true,"transcript_path":"%s"}' "$d/t_bad" | bash "$HOOK" >/dev/null 2>&1 ); loop_rc=$?
+if [ "$block_rc" = "2" ] && [ "$allow_rc" = "0" ] && [ "$amb_rc" = "0" ] && [ "$loop_rc" = "0" ]; then
+  ok "subagent-audit hook blocks unbacked, allows backed, fails open on ambiguity/loop"
+else bad "subagent-audit hook (block=$block_rc allow=$allow_rc amb=$amb_rc loop=$loop_rc)"; fi
+
+# A7. a malformed marker (missing label) is surfaced, not silently trusted.
+d="$(audit_sandbox)"
+printf '<agent-done:claim exit="0" />\n' > "$d/m.md"
+( cd "$d" && bash "$DONE_GATE" audit --transcript m.md --run auditrun --json 2>/dev/null ) > "$d/m.json"
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["summary"]["unparsed"]==1 and d["claims"][0]["verdict"]=="UNPARSED"' "$d/m.json" >/dev/null 2>&1; then
+  ok "a marker with no label is reported UNPARSED, never backed"
+else bad "audit malformed marker ($(cat "$d/m.json"))"; fi
+
+# A8. the audit subcommand rejects a missing --transcript with a clear message.
+# (Capture the output first — audit exits non-zero here by design, and the suite
+# runs under `set -o pipefail`, so a `... | grep` would inherit that exit code.)
+audit_usage="$(bash "$DONE_GATE" audit 2>&1 || true)"
+if printf '%s' "$audit_usage" | grep -qi 'transcript'; then
+  ok "audit requires --transcript and reports so"
+else bad "audit usage guard ($audit_usage)"; fi
+
+# A9. a zero-looking-but-not-"0" or garbage claimed exit on a FAILING check must
+# still be MISREPORTED — it cannot be laundered into BACKED.
+d="$(audit_sandbox)"
+bad9=0
+for e in '00' ' 0' 'fail'; do
+  printf '<agent-done:claim label="lint" exit="%s" />\n' "$e" > "$d/e.md"
+  vv="$( ( cd "$d" && bash "$DONE_GATE" audit --transcript e.md --run auditrun --json 2>/dev/null ) | python3 -c 'import json,sys; print(json.load(sys.stdin)["claims"][0]["verdict"])' 2>/dev/null)"
+  [ "$vv" = "MISREPORTED" ] || bad9=1
+done
+# and an honest exit="1" claiming the real failure stays BACKED
+printf '<agent-done:claim label="lint" exit="1" />\n' > "$d/e.md"
+vv1="$( ( cd "$d" && bash "$DONE_GATE" audit --transcript e.md --run auditrun --json 2>/dev/null ) | python3 -c 'import json,sys; print(json.load(sys.stdin)["claims"][0]["verdict"])' 2>/dev/null)"
+[ "$vv1" = "BACKED" ] || bad9=1
+[ "$bad9" = "0" ] && ok "a crafted claimed exit cannot launder a failing check into BACKED" || bad "audit misreported normalization"
+
+# A10. the heuristic binds labels on a WHOLE token only — prose containing a label
+# as a substring ("greatest" ⊃ "test") must NOT bind it and falsely fail the gate.
+d="$(newsandbox)"
+( cd "$d" && bash "$DONE_GATE" capture --run wb --label test -- sh -c 'exit 1' >/dev/null 2>&1 ) || true
+printf 'This is the greatest refactor, all verified and shipped.\n' > "$d/p.md"
+( cd "$d" && bash "$DONE_GATE" audit --transcript p.md --run wb --json 2>/dev/null ) > "$d/wb.json"
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["ok"] is True; assert all(c["label"]!="test" for c in d["claims"])' "$d/wb.json" >/dev/null 2>&1; then
+  ok "heuristic binds whole-token labels only (no substring false positive)"
+else bad "audit substring binding ($(cat "$d/wb.json"))"; fi
 
 echo "== action verify mode (v0.10) =="
 
