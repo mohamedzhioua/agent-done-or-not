@@ -4,7 +4,7 @@
   "homepage": "https://github.com/mohamedzhioua/agent-done-or-not",
   "license": "MIT",
   "url": "https://github.com/mohamedzhioua/agent-done-or-not/archive/refs/tags/v0.13.1.tar.gz",
-  "hash": "5ccbf47dd3672d0ccd3c4caaad2a18768ae6b570c3665d21ec5658607cbccc72",
+  "hash": "da7e58d40474f00d024a2ec167d2356579bcec497577070f7afc7dddb883a516",
   "extract_dir": "agent-done-or-not-0.13.1",
   "pre_install": [
     "# Ship a .cmd launcher that forwards to the bundled native PowerShell",
