@@ -14,8 +14,9 @@ inputs:
     default: assert
   pr-body:
     description: |
-      For mode: review-pr — the PR description text whose claims to re-execute,
-      e.g. pr-body: ${{ github.event.pull_request.body }}. SECURITY: review-pr
+      For mode: review-pr — the PR description text whose claims to re-execute.
+      Wire it to the pull request body context, github.event.pull_request.body
+      (see the ready-to-use recipe in docs/pr-receipts.md). SECURITY: review-pr
       re-executes the PR's own code, so run it ONLY on the `pull_request` event
       (never `pull_request_target`) with no secrets in scope — an untrusted fork
       must not reach your credentials. Ignored in other modes.
