@@ -110,7 +110,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}   # the PR's code
       # install the project's deps here (npm ci / pip install / go mod download)
-      - uses: mohamedzhioua/agent-done-or-not@v0.13.0
+      - uses: mohamedzhioua/agent-done-or-not@v0.13.1
         with:
           mode: review-pr
           pr-body: ${{ github.event.pull_request.body }}

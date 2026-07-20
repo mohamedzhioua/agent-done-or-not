@@ -48,7 +48,7 @@
 # ledger is hand-written JSONL. No network, no LLM, no extra tooling.
 set -euo pipefail
 
-GATE_VERSION="0.13.0"
+GATE_VERSION="0.13.1"
 
 normalize_path() {
   case "$1" in

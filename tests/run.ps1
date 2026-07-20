@@ -632,7 +632,7 @@ try {
 $r = Invoke-Gate $d (@('capture', '--label', 'envelope', '--') + (PassingCommand))
 $receipt = Latest-Receipt $r.ProofDir
 if ($receipt.schema_version -eq 2 -and $receipt.disposition -eq 'reexecuted' `
-        -and $receipt.producer -eq 'done-gate.ps1@0.13.0' `
+        -and $receipt.producer -eq 'done-gate.ps1@0.13.1' `
         -and $receipt.repo -eq 'https://example.invalid/project.git' `
         -and $receipt.subject -eq 'init' -and -not [string]::IsNullOrEmpty($receipt.host_os)) {
     Ok 'capture writes the v2 evidence envelope with repo, subject and producer'

@@ -16,7 +16,7 @@
 # ATTEMPT/REF). Exits 0 only if EVERY declared check was re-run fresh and passed.
 set -uo pipefail
 
-CI_VERIFY_VERSION="0.13.0"
+CI_VERIFY_VERSION="0.13.1"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="${AGENT_DONE_GATE:-$HERE/done-gate.sh}"
