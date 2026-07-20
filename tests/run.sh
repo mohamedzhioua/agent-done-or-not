@@ -723,7 +723,7 @@ d="$(newsandbox)"
 ( cd "$d" && git remote add origin https://example.invalid/project.git \
   && bash "$DONE_GATE" capture --label envelope -- true >/dev/null 2>&1 )
 ledger="$(printf '%s\n' "$d"/.agent-proof/*/ledger.jsonl)"
-if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['schema_version']==2 and d['disposition']=='reexecuted'; assert d['producer']=='done-gate.sh@0.13.0'; assert d['repo']=='https://example.invalid/project.git' and d['subject']=='init'; assert isinstance(d['host_os'],str) and d['host_os']" "$ledger" >/dev/null 2>&1; then
+if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['schema_version']==2 and d['disposition']=='reexecuted'; assert d['producer']=='done-gate.sh@0.13.1'; assert d['repo']=='https://example.invalid/project.git' and d['subject']=='init'; assert isinstance(d['host_os'],str) and d['host_os']" "$ledger" >/dev/null 2>&1; then
   ok "capture writes the v2 evidence envelope with repo, subject and producer"
 else bad "evidence envelope fields"; fi
 
@@ -783,7 +783,7 @@ else bad "commit subject JSON escaping (got: $line)"; fi
 d="$(newsandbox)"
 ( cd "$d" && INPUT_CHECKS='test: true' AGENT_DONE_GATE="$DONE_GATE" bash "$REPO/ci-verify.sh" >/dev/null 2>&1 )
 ledger="$(printf '%s\n' "$d"/.agent-proof/*/ledger.jsonl)"
-if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['verifier']=='ci-verify.sh@0.13.0'" "$ledger" >/dev/null 2>&1; then
+if python3 -c "import json,sys; d=json.loads(open(sys.argv[1], encoding='utf-8').read().splitlines()[-1]); assert d['verifier']=='ci-verify.sh@0.13.1'" "$ledger" >/dev/null 2>&1; then
   ok "ci-verify receipts carry verifier identity"
 else bad "ci-verify verifier identity"; fi
 

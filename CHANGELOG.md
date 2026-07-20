@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-07-20
+
+Patch release. Fixes the composite Action failing to load (a v0.13.0
+regression), plus docs/metadata polish. No engine behavior change; strictly
+additive.
+
 ### Changed
 - `AGENTS.md` and `CLAUDE.md` now point to [`docs/markers.md`](docs/markers.md)
   for the `<agent-done:claim>` marker contract, so agents emit the claim markers

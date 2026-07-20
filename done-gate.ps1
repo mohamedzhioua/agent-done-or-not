@@ -3,7 +3,7 @@
 # Native PowerShell port of done-gate.sh. Supports Windows PowerShell 5.1 and
 # PowerShell 7+ with built-ins only.
 
-$script:GATE_VERSION = '0.13.0'
+$script:GATE_VERSION = '0.13.1'
 $ErrorActionPreference = 'Stop'
 
 function Write-Stderr {
