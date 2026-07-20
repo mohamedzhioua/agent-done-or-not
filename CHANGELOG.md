@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- `AGENTS.md` and `CLAUDE.md` now point to [`docs/markers.md`](docs/markers.md)
+  for the `<agent-done:claim>` marker contract, so agents emit the claim markers
+  `done-gate.sh audit` consumes. Docs-only; no behavior change.
+- `package.json` `repository.url` normalized to the canonical `git+https://…`
+  form (`npm pkg fix`), silencing an `npm publish` warning. Metadata-only.
+
 ## [0.13.0] — 2026-07-18
 
 The PR Receipts release. Adds a `review-pr` subcommand (and Action `mode:

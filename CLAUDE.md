@@ -26,3 +26,8 @@ proof gate. Saying "done" without a passing receipt is not allowed.
 
 The Stop gate will block you from ending the turn until a fresh passing receipt
 exists. Do not work around it; produce the proof.
+
+When you claim a check passed, also emit a claim marker in your final summary so
+`done-gate.sh audit` can verify it against the ledger — `<agent-done:claim
+label="test" exit="0" />` (same `--label` as `capture`; omitting `exit` asserts a
+pass). Full contract: [`docs/markers.md`](docs/markers.md).
