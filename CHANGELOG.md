@@ -13,6 +13,16 @@ All notable changes to this project are documented here. The format follows
 - `package.json` `repository.url` normalized to the canonical `git+https://…`
   form (`npm pkg fix`), silencing an `npm publish` warning. Metadata-only.
 
+### Fixed
+- **The composite Action manifest failed to load (`action.yml`).** The `pr-body`
+  input's description embedded a live `${{ github.event.pull_request.body }}`
+  example, which GitHub's action-manifest loader evaluated and rejected
+  (`Unrecognized named-value: 'github'`) — breaking `uses:
+  mohamedzhioua/agent-done-or-not@v0.13.0` for every consumer in every mode, and
+  turning the Action self-test red since v0.13.0. Reworded the example to plain
+  documentation naming the `github.event.pull_request.body` context; the live
+  `${{ … }}` recipe still lives in [`docs/pr-receipts.md`](docs/pr-receipts.md).
+
 ## [0.13.0] — 2026-07-18
 
 The PR Receipts release. Adds a `review-pr` subcommand (and Action `mode:
