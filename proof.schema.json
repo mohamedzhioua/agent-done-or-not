@@ -79,7 +79,7 @@
     },
     "verifier": {
       "type": "string",
-      "description": "The verifier identity supplied through AGENT_DONE_VERIFIER; empty when capture was invoked directly."
+      "description": "Advisory, self-declared: the verifier label copied verbatim from AGENT_DONE_VERIFIER; empty when capture was invoked directly. Whoever runs capture can set it to any value, so it is NOT an attestation of who verified the check — like ci, trust comes from where the receipt was produced (e.g. the Action re-running it), not from this field."
     },
     "host_os": {
       "type": "string",
