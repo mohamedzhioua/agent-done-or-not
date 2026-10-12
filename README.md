@@ -252,7 +252,8 @@ npx agent-done-or-not report --format markdown
 ```
 
 The v2 evidence envelope adds repository and commit identity (`repo`, `subject`),
-producer and verifier identity (`producer`, `verifier`), the capture environment
+producer and verifier labels (`producer`, `verifier` — `verifier` is copied from
+`AGENT_DONE_VERIFIER`, so it is self-declared, not an attestation), the capture environment
 (`host_os`, one of `linux`/`darwin`/`windows`/`unknown` — identical across the
 bash and PowerShell engines on the same machine), and the evidence `disposition`.
 `capture` always writes `disposition: "reexecuted"` because it runs the recorded
